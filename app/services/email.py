@@ -1,5 +1,5 @@
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
-from pydantic import ValidationError, SecretStr
+from pydantic import SecretStr
 from typing import Dict, Any, Optional
 import os
 import logging
@@ -99,6 +99,9 @@ async def send_lead_notification(lead_data: Dict[str, Any], session_id: str) -> 
         await fm.send_message(message)
         logger.info(f"Lead notification sent for session {session_id}")
         return True
+    except Exception as e:
+        logger.error(f"Failed to send lead notification for session {session_id}: {str(e)}")
+        return False
         
     except Exception as e:
         logger.error(f"Failed to send lead notification for session {session_id}: {str(e)}")

@@ -10,6 +10,7 @@ import logging
 
 from .routers import chat
 from .models.chat import ChatSession
+from .services.email import send_lead_notification
 
 load_dotenv()
 
@@ -51,6 +52,24 @@ app.include_router(chat.router,
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy"}
+
+@app.get('/test-email', tags=["Testing"])
+async def test_email():
+    """Test email configuration - sends a test email"""
+    test_lead = {
+        "name": "Test User",
+        "email": "test@example.com",
+        "phone": "+234-XXX-XXXX"
+    }
+    
+    try:
+        result = await send_lead_notification(test_lead, "test_session_email")
+        if result:
+            return {"status": "success", "message": "Test email sent successfully! Check your inbox."}
+        else:
+            return {"status": "failed", "message": "Email sending failed. Check backend logs for details."}
+    except Exception as e:
+        return {"status": "error", "message": f"Error: {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn

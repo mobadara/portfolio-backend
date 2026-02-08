@@ -75,20 +75,59 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
                 # Call Groq
                 completion = client.chat.completions.create(
-                    model="llama3-8b-8192",
+                    model=os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
                     messages=cast(list, history),  # type: ignore
                     temperature=0.7
                 )
                 ai_response = completion.choices[0].message.content
 
+                # Check for Human Transfer Request
+                if ai_response and "HUMAN_TRANSFER_REQUEST:" in ai_response:
+                    try:
+                        transfer_reason = ai_response.split("HUMAN_TRANSFER_REQUEST:")[1].strip()
+                        session.human_mode = True
+                        await session.save()
+                        
+                        # Send notification email for human transfer
+                        lead_dict = {"name": "Chat User", "email": "Transfer Request", "phone": transfer_reason}
+                        await send_lead_notification(lead_dict, session_id)
+                        
+                        ai_response = "I'm connecting you with Muyiwa now. He'll be with you shortly! 👋"
+                        logger.info(f"Human transfer requested for session {session_id}: {transfer_reason}")
+                    except Exception as e:
+                        logger.error(f"Human transfer error for session {session_id}: {str(e)}")
+                        ai_response = "Let me connect you with Muyiwa. Please hold..."
+
                 # Check for Lead Capture
                 if ai_response and "LEAD_CAPTURED:" in ai_response:
                     try:
-                        clean_info = ai_response.split("LEAD_CAPTURED:")[1]
+                        # Extract lead info from AI response
+                        lead_section = ai_response.split("LEAD_CAPTURED:")[1]
+                        # Simple parsing: expect format like "Name: X, Email: Y, Phone: Z"
+                        lead_dict = {
+                            "name": "Interested Visitor",
+                            "email": "Not provided",
+                            "phone": "Not provided"
+                        }
+                        
+                        # Try to parse the extracted info
+                        lines = lead_section.strip().split('\n')
+                        for line in lines:
+                            if 'name' in line.lower():
+                                lead_dict['name'] = line.split(':', 1)[-1].strip() if ':' in line else lead_dict['name']
+                            elif 'email' in line.lower():
+                                lead_dict['email'] = line.split(':', 1)[-1].strip() if ':' in line else lead_dict['email']
+                            elif 'phone' in line.lower():
+                                lead_dict['phone'] = line.split(':', 1)[-1].strip() if ':' in line else lead_dict['phone']
+                        
                         # Send Email
-                        lead_dict = {"name": "User", "email": "See Chat", "phone": "See Chat"} 
-                        await send_lead_notification(lead_dict, session_id)
-                        ai_response = "Thanks! I've notified Muyiwa. He might join this chat momentarily."
+                        email_sent = await send_lead_notification(lead_dict, session_id)
+                        if email_sent:
+                            ai_response = "Thanks! I've notified Muyiwa about your interest. He might join this chat momentarily."
+                            logger.info(f"Lead captured and email sent for session {session_id}: {lead_dict}")
+                        else:
+                            logger.warning(f"Lead captured but email failed for session {session_id}")
+                            ai_response = "Thanks for your interest. Let me notify the team."
                     except Exception as e:
                         logger.error(f"Lead capture error for session {session_id}: {str(e)}")
                         ai_response = "Thanks for your interest. Let me notify the team."
