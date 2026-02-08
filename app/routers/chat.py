@@ -20,6 +20,12 @@ def _get_groq_client() -> Optional[Groq]:
     if not api_key:
         logger.warning("Groq API key not configured (GROQ_API_KEY env var required)")
         return None
+    
+    try:
+        return Groq(api_key=api_key)
+    except Exception as e:
+        logger.error(f"Failed to initialize Groq client: {str(e)}")
+        return None
 
 
 @router.get("/admin/chat_sessions/{session_id}")
@@ -42,18 +48,13 @@ async def get_admin_chat_session(session_id: str):
             "token_env": "ADMIN_AUTH_TOKEN"
         }
     }
-    try:
-        return Groq(api_key=api_key)
-    except Exception as e:
-        logger.error(f"Failed to initialize Groq client: {str(e)}")
-        return None
 
 
 @router.websocket("/chat/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     client = _get_groq_client()
     if not client:
-        await websocket.close(code=status.WS_1011_SERVER_ERROR)
+        await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
         logger.error(f"Groq client not available for session {session_id}")
         return
     
