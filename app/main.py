@@ -39,14 +39,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+origins = [
+    'http://localhost:3000',
+]
 
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000,https://portfolio-backend-6t3l.onrender.com").split(","),
+    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000,https://portfolio-backend-tjq3.onrender.com").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_origin_regex=r"^https?://.*\.vercel\.app$"
+    allow_origins=origins
 )
 
 app.include_router(chat.router,
