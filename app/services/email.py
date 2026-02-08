@@ -102,7 +102,3 @@ async def send_lead_notification(lead_data: Dict[str, Any], session_id: str) -> 
     except Exception as e:
         logger.error(f"Failed to send lead notification for session {session_id}: {str(e)}")
         return False
-        
-    except Exception as e:
-        logger.error(f"Failed to send lead notification for session {session_id}: {str(e)}")
-        return False
