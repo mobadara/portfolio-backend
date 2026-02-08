@@ -51,7 +51,8 @@ async def send_lead_notification(lead_data: Dict[str, Any], session_id: str) -> 
         return False
     
     try:
-        admin_link = f'http://localhost:8000/admin/chat_sessions/{session_id}'
+        backend_url = os.getenv('BACKEND_URL', 'https://portfolio-backend-6t3l.onrender.com')
+        admin_link = f'{backend_url}/admin/chat_sessions/{session_id}'
         
         # Validate required fields
         name = lead_data.get('name', 'Guest User')

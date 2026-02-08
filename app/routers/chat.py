@@ -34,7 +34,7 @@ async def get_admin_chat_session(session_id: str):
     if not session:
         return {"status": "not_found", "session_id": session_id}
 
-    admin_ws_base = os.getenv("ADMIN_WS_BASE", "ws://localhost:8000")
+    admin_ws_base = os.getenv("ADMIN_WS_BASE", "wss://portfolio-backend-6t3l.onrender.com")
     admin_ws_url = f"{admin_ws_base}/ws/admin/{session_id}"
 
     return {

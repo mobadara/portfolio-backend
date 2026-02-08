@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
     
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    client = AsyncIOMotorClient(host=os.getenv('MONGODB_URLSSSSSSSS', 'localhost'), port=int(os.getenv('MONGODB_PORT', 27017)))
+    client = AsyncIOMotorClient(os.getenv('MONGO_URL', 'mongodb://localhost:27017'))
     raw_db = client[os.getenv('DB_NAME', 'portfolio_db')]
     database = cast(AsyncIOMotorDatabase, raw_db)
     await init_beanie(database=database, document_models=[ChatSession])   # pyright: ignore[reportArgumentType]
@@ -39,7 +39,7 @@ app = FastAPI(
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000").split(","),
+    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000,https://portfolio-backend-6t3l.onrender.com").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
