@@ -146,3 +146,4 @@ zope.tales==7.0
 zope.testing==6.1
 zope.traversing==6.0
 zope.viewlet==6.0
+pymongo[srv]==4.16.0
