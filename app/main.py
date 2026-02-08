@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from typing import cast
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 import logging
+import certifi
 
 from .routers import chat
 from .models.chat import ChatSession
@@ -18,7 +19,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
     
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    client = AsyncIOMotorClient(os.getenv('MONGO_URL', 'mongodb://localhost:27017'))
+    client = AsyncIOMotorClient(
+        os.getenv('MONGO_URL', 'mongodb://localhost:27017'),
+        tlsCAFile=certifi.where()
+        )
     raw_db = client[os.getenv('DB_NAME', 'portfolio_db')]
     database = cast(AsyncIOMotorDatabase, raw_db)
     await init_beanie(database=database, document_models=[ChatSession])   # pyright: ignore[reportArgumentType]

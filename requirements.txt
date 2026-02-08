@@ -147,3 +147,4 @@ zope.testing==6.1
 zope.traversing==6.0
 zope.viewlet==6.0
 pymongo[srv]==4.16.0
+certifi[cacert]==2026.1.4
