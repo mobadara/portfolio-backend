@@ -20,6 +20,28 @@ def _get_groq_client() -> Optional[Groq]:
     if not api_key:
         logger.warning("Groq API key not configured (GROQ_API_KEY env var required)")
         return None
+
+
+@router.get("/admin/chat_sessions/{session_id}")
+async def get_admin_chat_session(session_id: str):
+    session = await ChatSession.find_one(ChatSession.session_id == session_id)
+    if not session:
+        return {"status": "not_found", "session_id": session_id}
+
+    admin_ws_base = os.getenv("ADMIN_WS_BASE", "ws://localhost:8000")
+    admin_ws_url = f"{admin_ws_base}/ws/admin/{session_id}"
+
+    return {
+        "status": "ok",
+        "session_id": session_id,
+        "human_mode": session.human_mode,
+        "messages": session.model_dump().get("messages", []),
+        "admin_websocket": {
+            "url": admin_ws_url,
+            "token_required": True,
+            "token_env": "ADMIN_AUTH_TOKEN"
+        }
+    }
     try:
         return Groq(api_key=api_key)
     except Exception as e:
