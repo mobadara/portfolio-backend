@@ -8,6 +8,7 @@ BTrees==6.3
 certifi==2026.1.4
 cffi==2.0.0
 Chameleon==4.6.0
+charset-normalizer==3.4.4
 click==8.3.1
 cryptography==46.0.4
 distro==1.9.0
@@ -63,6 +64,7 @@ python-multipart==0.0.22
 pytz==2025.2
 PyYAML==6.0.3
 regex==2025.11.3
+requests==2.32.5
 rich==14.3.2
 rich-toolkit==0.18.1
 rignore==0.7.6
@@ -146,5 +148,3 @@ zope.tales==7.0
 zope.testing==6.1
 zope.traversing==6.0
 zope.viewlet==6.0
-pymongo[srv]==4.16.0
-certifi[cacert]==2026.1.4
