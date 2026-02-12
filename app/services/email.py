@@ -107,8 +107,8 @@ def _get_mail_config() -> Optional[ConnectionConfig]:
 #         return False
 
 
-BREVO_API_KEY = os.getenv("BREVO_API_KEY") # Add this to your .env / Render
-SENDER_EMAIL = os.getenv("MAIL_USERNAME")  # Your email
+BREVO_API_KEY = os.getenv("BREVO_API_KEY")
+SENDER_EMAIL = os.getenv("MAIL_USERNAME")
 SENDER_NAME = "Muyiwa's AI Assistant"
 
 async def send_lead_notification(lead_data: Dict[str, Any], session_id: str):
