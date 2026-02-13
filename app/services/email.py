@@ -1,6 +1,4 @@
-from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
-from pydantic import SecretStr
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import os
 import logging
 import requests
@@ -8,32 +6,32 @@ import requests
 logger = logging.getLogger(__name__)
 
 
-def _get_mail_config() -> Optional[ConnectionConfig]:
-    """Lazily initialize mail config only if required env vars are set"""
-    MAIL_USERNAME = os.getenv('MAIL_USERNAME')
-    MAIL_PASSWORD = os.getenv('MAIL_PASSWORD')
+# def _get_mail_config() -> Optional[ConnectionConfig]:
+#     """Lazily initialize mail config only if required env vars are set"""
+#     MAIL_USERNAME = os.getenv('MAIL_USERNAME')
+#     MAIL_PASSWORD = os.getenv('MAIL_PASSWORD')
 
     
-    # Return None if email config is not set up
-    if not MAIL_USERNAME or not MAIL_PASSWORD:
-        logger.warning("Email configuration not set (MAIL_USERNAME and MAIL_PASSWORD required)")
-        return None
+#     # Return None if email config is not set up
+#     if not MAIL_USERNAME or not MAIL_PASSWORD:
+#         logger.warning("Email configuration not set (MAIL_USERNAME and MAIL_PASSWORD required)")
+#         return None
     
-    try:
-        return ConnectionConfig(
-            MAIL_USERNAME=MAIL_USERNAME,
-            MAIL_PASSWORD=SecretStr(MAIL_PASSWORD),
-            MAIL_FROM=MAIL_USERNAME,
-            MAIL_PORT=int(os.getenv('MAIL_PORT', '587')),
-            MAIL_SERVER=os.getenv('MAIL_SERVER', "smtp.gmail.com"),
-            MAIL_STARTTLS=os.getenv('MAIL_USE_TLS', 'True') == 'True',
-            MAIL_SSL_TLS=os.getenv('MAIL_USE_SSL', 'False') == 'True',
-            USE_CREDENTIALS=True,
-            VALIDATE_CERTS=True
-        )
-    except Exception as e:
-        logger.error(f"Failed to initialize email config: {str(e)}")
-        return None
+#     try:
+#         return ConnectionConfig(
+#             MAIL_USERNAME=MAIL_USERNAME,
+#             MAIL_PASSWORD=SecretStr(MAIL_PASSWORD),
+#             MAIL_FROM=MAIL_USERNAME,
+#             MAIL_PORT=int(os.getenv('MAIL_PORT', '587')),
+#             MAIL_SERVER=os.getenv('MAIL_SERVER', "smtp.gmail.com"),
+#             MAIL_STARTTLS=os.getenv('MAIL_USE_TLS', 'True') == 'True',
+#             MAIL_SSL_TLS=os.getenv('MAIL_USE_SSL', 'False') == 'True',
+#             USE_CREDENTIALS=True,
+#             VALIDATE_CERTS=True
+#         )
+#     except Exception as e:
+#         logger.error(f"Failed to initialize email config: {str(e)}")
+#         return None
 
 
 # async def send_lead_notification(lead_data: Dict[str, Any], session_id: str) -> bool:
@@ -117,7 +115,7 @@ async def send_lead_notification(lead_data: Dict[str, Any], session_id: str):
     """
     url = "https://api.brevo.com/v3/smtp/email"
     
-    admin_link = f"https://portfolio-frontend-livid.vercel.app//admin/chat/{session_id}"
+    admin_link = f"https://portfolio-frontend-livid.vercel.app/admin/chat/{session_id}"
     
     html_content = f"""
     <html>

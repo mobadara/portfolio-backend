@@ -14,6 +14,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/admin/sessions")
+async def get_admin_sessions():
+    """List all active chat sessions with basic info"""
+    sessions = await ChatSession.find_all().to_list()
+    
+    sessions_list = []
+    for session in sessions:
+        sessions_list.append({
+            "session_id": session.session_id,
+            "is_active": session.is_active,
+            "human_mode": session.human_mode,
+            "human_agent_assigned": session.human_agent_assigned,
+            "message_count": len(session.messages),
+            "user_name": session.user_name,
+            "user_email": session.user_email,
+            "last_activity": session.messages[-1].timestamp if session.messages else None
+        })
+    
+    return {
+        "status": "ok",
+        "total_sessions": len(sessions_list),
+        "sessions": sessions_list
+    }
+
+
 def _get_groq_client() -> Optional[Groq]:
     """Lazily initialize Groq client only if API key is set"""
     api_key = os.getenv("GROQ_API_KEY")
@@ -47,6 +72,48 @@ async def get_admin_chat_session(session_id: str):
             "token_required": True,
             "token_env": "ADMIN_AUTH_TOKEN"
         }
+    }
+
+
+@router.post("/chat/{session_id}/request-human")
+async def request_human_mode(session_id: str):
+    """Enable human mode for a session - user requests to speak with a human"""
+    session = await ChatSession.find_one(ChatSession.session_id == session_id)
+    
+    if not session:
+        return {
+            "status": "error",
+            "message": "Session not found",
+            "session_id": session_id
+        }
+    
+    # Enable human mode
+    session.human_mode = True
+    session.human_agent_assigned = False  # Mark as pending assignment
+    await session.save()
+    
+    # Send notification email
+    try:
+        lead_dict = {
+            "name": session.user_name or "Chat User",
+            "email": session.user_email or "Not provided",
+            "phone": session.user_phone or "Human assistance requested"
+        }
+        await send_lead_notification(lead_dict, session_id)
+        logger.info(f"Human mode requested for session {session_id}, notification sent")
+    except Exception as e:
+        logger.error(f"Failed to send notification for session {session_id}: {str(e)}")
+    
+    # Notify user and admin via WebSocket if connected
+    user_message = "I'm connecting you with Muyiwa now. He'll be with you shortly! 👋"
+    await manager.forward_to_user(session_id, user_message)
+    await manager.forward_to_admin(session_id, f"User requested human assistance in session {session_id}")
+    
+    return {
+        "status": "ok",
+        "message": "Human mode enabled",
+        "session_id": session_id,
+        "human_mode": True
     }
 
 
