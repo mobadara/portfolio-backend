@@ -108,33 +108,93 @@ logger = logging.getLogger(__name__)
 BREVO_API_KEY = os.getenv("BREVO_API_KEY")
 SENDER_EMAIL = os.getenv("MAIL_USERNAME")
 SENDER_NAME = "Muyiwa's AI Assistant"
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://portfolio-frontend-livid.vercel.app").rstrip("/")
 
-async def send_lead_notification(lead_data: Dict[str, Any], session_id: str):
+async def send_lead_notification(lead_data: Dict[str, Any], session_id: str) -> bool:
     """
     Sends an email using Brevo HTTP API (Bypasses SMTP port blocking).
     """
+    if not BREVO_API_KEY:
+        logger.error("❌ BREVO_API_KEY is missing; cannot send lead notification")
+        return False
+
+    if not SENDER_EMAIL:
+        logger.error("❌ MAIL_USERNAME is missing; cannot send lead notification")
+        return False
+
     url = "https://api.brevo.com/v3/smtp/email"
-    
-    admin_link = f"https://portfolio-frontend-livid.vercel.app/admin/chat/{session_id}"
-    
+
+    admin_link = f"{FRONTEND_URL}/admin/chat/{session_id}"
+    lead_name = lead_data.get('name', 'N/A')
+    lead_email = lead_data.get('email', 'N/A')
+    lead_phone = lead_data.get('phone', 'N/A')
+
     html_content = f"""
-    <html>
-    <body>
-        <h3>🚀 New Portfolio Lead Captured!</h3>
-        <p><b>Name:</b> {lead_data.get('name', 'N/A')}</p>
-        <p><b>Email:</b> {lead_data.get('email', 'N/A')}</p>
-        <p><b>Phone:</b> {lead_data.get('phone', 'N/A')}</p>
-        <br>
-        <p>The user is currently online. Click below to take over:</p>
-        <a href="{admin_link}" style="padding: 10px 20px; background: #001f3f; color: white; text-decoration: none; border-radius: 5px;">Join Live Chat</a>
-    </body>
-    </html>
+        <html>
+            <body style="margin:0;padding:0;background:#f2f5fb;font-family:Inter,Segoe UI,Arial,sans-serif;color:#0f172a;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding:28px 12px;">
+                    <tr>
+                        <td align="center">
+                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #dbe3f0;box-shadow:0 12px 32px rgba(15,23,42,0.08);">
+                                <tr>
+                                    <td style="padding:22px 24px;background:linear-gradient(135deg,#001f3f 0%,#003a73 100%);color:#ffffff;">
+                                        <div style="font-size:12px;letter-spacing:1px;text-transform:uppercase;opacity:0.9;">Portfolio Live Chat</div>
+                                        <h2 style="margin:8px 0 0;font-size:22px;line-height:1.3;">New Human Support Request</h2>
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td style="padding:22px 24px 8px;">
+                                        <p style="margin:0 0 14px;font-size:15px;line-height:1.6;color:#334155;">
+                                            A visitor requested to speak with you. Use the button below to open the admin chat and join this session.
+                                        </p>
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td style="padding:0 24px 8px;">
+                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 10px;">
+                                            <tr>
+                                                <td style="width:120px;font-size:13px;color:#64748b;">Name</td>
+                                                <td style="font-size:15px;font-weight:600;color:#0f172a;">{lead_name}</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="width:120px;font-size:13px;color:#64748b;">Email</td>
+                                                <td style="font-size:15px;font-weight:600;color:#0f172a;">{lead_email}</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="width:120px;font-size:13px;color:#64748b;">Phone</td>
+                                                <td style="font-size:15px;font-weight:600;color:#0f172a;">{lead_phone}</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="width:120px;font-size:13px;color:#64748b;">Session ID</td>
+                                                <td style="font-size:13px;color:#334155;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{session_id}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+
+                                <tr>
+                                    <td style="padding:18px 24px 28px;">
+                                        <a href="{admin_link}" style="display:inline-block;padding:12px 18px;border-radius:10px;background:#0b63f6;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;">Open Admin Chat</a>
+                                        <p style="margin:12px 0 0;font-size:12px;color:#64748b;line-height:1.5;">
+                                            If the button does not work, copy this URL:<br />
+                                            <span style="color:#334155;word-break:break-all;">{admin_link}</span>
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+            </body>
+        </html>
     """
 
     payload = {
         "sender": {"name": SENDER_NAME, "email": SENDER_EMAIL},
         "to": [{"email": SENDER_EMAIL, "name": "Muyiwa Obadara"}],
-        "subject": "🔥 Hot Lead: Live Chat Request",
+        "subject": "New Human Chat Request • Portfolio",
         "htmlContent": html_content
     }
 
@@ -148,7 +208,10 @@ async def send_lead_notification(lead_data: Dict[str, Any], session_id: str):
         response = requests.post(url, json=payload, headers=headers)
         if response.status_code == 201:
             logger.info("✅ Email sent successfully via Brevo!")
+            return True
         else:
             logger.error(f"❌ Email failed: {response.text}")
+            return False
     except Exception as e:
         logger.error(f"❌ Error sending email: {e}")
+        return False

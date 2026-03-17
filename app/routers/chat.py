@@ -3,6 +3,8 @@ from groq import Groq
 from typing import cast, Optional
 import os
 import logging
+import json
+import re
 
 from ..models.chat import ChatSession, Message, MessageRole
 from ..services.websocket_manager import manager
@@ -12,6 +14,46 @@ from ..services.prompts import SYSTEM_PROMPT
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _extract_human_support_payload(data: str) -> Optional[dict]:
+    """Extract human-support payload from structured JSON or legacy text format."""
+    try:
+        parsed = json.loads(data)
+        if isinstance(parsed, dict) and parsed.get("type") == "HUMAN_SUPPORT_REQUEST":
+            return {
+                "name": (parsed.get("name") or "").strip(),
+                "email": (parsed.get("email") or "").strip(),
+                "phone": (parsed.get("phone") or "").strip(),
+                "message": (parsed.get("message") or "").strip(),
+                "schema": parsed.get("schema"),
+                "version": parsed.get("version")
+            }
+    except json.JSONDecodeError:
+        pass
+
+    if not data.startswith("HUMAN_SUPPORT_REQUEST"):
+        return None
+
+    body = data.split("\n", 1)[1] if "\n" in data else ""
+    name_match = re.search(r"name\s*:\s*(.+)", body, re.IGNORECASE)
+    email_match = re.search(r"email\s*:\s*(.+)", body, re.IGNORECASE)
+    phone_match = re.search(r"phone\s*:\s*(.+)", body, re.IGNORECASE)
+
+    return {
+        "name": name_match.group(1).strip() if name_match else "",
+        "email": email_match.group(1).strip() if email_match else "",
+        "phone": phone_match.group(1).strip() if phone_match else "",
+        "message": body.strip(),
+        "schema": "legacy_human_support",
+        "version": 1
+    }
+
+
+def _is_valid_email(email: str) -> bool:
+    if not email:
+        return False
+    return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email))
 
 
 @router.get("/admin/sessions")
@@ -59,7 +101,9 @@ async def get_admin_chat_session(session_id: str):
     if not session:
         return {"status": "not_found", "session_id": session_id}
 
-    admin_ws_base = os.getenv("ADMIN_WS_BASE", "wss://portfolio-backend-6t3l.onrender.com")
+    backend_url = os.getenv("BACKEND_URL", "https://portfolio-backend-tjq3.onrender.com").rstrip("/")
+    derived_ws_base = backend_url.replace("https://", "wss://").replace("http://", "ws://")
+    admin_ws_base = os.getenv("ADMIN_WS_BASE", derived_ws_base)
     admin_ws_url = f"{admin_ws_base}/ws/admin/{session_id}"
 
     return {
@@ -143,6 +187,61 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         while True:
             # 2. Receive User Message
             data = await websocket.receive_text()
+
+            human_payload = _extract_human_support_payload(data)
+            if human_payload:
+                captured_name = human_payload.get("name") or "Visitor"
+                captured_email = human_payload.get("email") or "Not provided"
+                captured_phone = human_payload.get("phone") or "Not provided"
+
+                details_message = human_payload.get("message") or (
+                    f"Human support details:\n"
+                    f"- Name: {captured_name}\n"
+                    f"- Email: {captured_email}\n"
+                    f"- Phone: {captured_phone}"
+                )
+
+                user_msg = Message(role=MessageRole.USER, content=details_message)
+                session.messages.append(user_msg)
+
+                session.user_name = captured_name if captured_name and captured_name != "Not provided" else session.user_name
+                session.user_phone = captured_phone if captured_phone and captured_phone != "Not provided" else session.user_phone
+
+                if _is_valid_email(captured_email):
+                    session.user_email = captured_email
+
+                session.human_mode = True
+                session.human_agent_assigned = False
+                await session.save()
+
+                lead_dict = {
+                    "name": session.user_name or captured_name,
+                    "email": session.user_email or captured_email,
+                    "phone": session.user_phone or captured_phone
+                }
+
+                try:
+                    await send_lead_notification(lead_dict, session_id)
+                except Exception as e:
+                    logger.error(f"Failed to send human support notification for {session_id}: {str(e)}")
+
+                await manager.forward_to_admin(
+                    session_id,
+                    (
+                        f"HUMAN SUPPORT REQUEST [{human_payload.get('schema') or 'unknown'} v{human_payload.get('version') or '?'}]\n"
+                        f"Name: {lead_dict['name']}\n"
+                        f"Email: {lead_dict['email']}\n"
+                        f"Phone: {lead_dict['phone']}"
+                    )
+                )
+
+                confirmation = "Thanks — your details are captured. Muyiwa will contact you shortly."
+                bot_msg = Message(role=MessageRole.ASSISTANT, content=confirmation)
+                session.messages.append(bot_msg)
+                await session.save()
+
+                await manager.send_personal_message(confirmation, websocket)
+                continue
             
             # Save User Message
             user_msg = Message(role=MessageRole.USER, content=data)
