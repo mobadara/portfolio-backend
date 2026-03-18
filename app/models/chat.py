@@ -40,6 +40,7 @@ class ChatSession(Document):
     human_agent_assigned: bool = Field(default=False, description="Indicates if a human agent has been assigned to the chat session")
     cleared_by_user: bool = Field(default=False, description="Set to true when visitor clears the chat from frontend")
     cleared_at: Optional[datetime] = Field(default=None, description="Timestamp when visitor cleared chat")
+    created_at: datetime = Field(default_factory=datetime.now, description="Timestamp when session was created")
     
     class Settings:
         name = 'chat_sessions'

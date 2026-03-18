@@ -93,6 +93,7 @@ async def get_admin_sessions(_: AdminUser = Depends(get_current_admin)):
             "human_agent_assigned": session.human_agent_assigned,
             "cleared_by_user": session.cleared_by_user,
             "cleared_at": session.cleared_at,
+            "created_at": session.created_at,
             "message_count": len(session.messages),
             "user_name": session.user_name,
             "user_email": session.user_email,
