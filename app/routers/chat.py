@@ -5,6 +5,7 @@ import os
 import logging
 import json
 import re
+from datetime import datetime, timezone
 
 from ..models.chat import ChatSession, Message, MessageRole
 from ..models.admin import AdminUser
@@ -58,6 +59,26 @@ def _is_valid_email(email: str) -> bool:
     return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email))
 
 
+def _extract_json_payload(raw_data: str) -> Optional[dict]:
+    try:
+        parsed = json.loads(raw_data)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        return None
+    return None
+
+
+async def _mark_session_cleared(session: ChatSession) -> None:
+    session.messages = []
+    session.is_active = False
+    session.cleared_by_user = True
+    session.cleared_at = datetime.now(timezone.utc)
+    session.human_mode = False
+    session.human_agent_assigned = False
+    await session.save()
+
+
 @router.get("/admin/sessions")
 async def get_admin_sessions(_: AdminUser = Depends(get_current_admin)):
     """List all active chat sessions with basic info"""
@@ -70,6 +91,8 @@ async def get_admin_sessions(_: AdminUser = Depends(get_current_admin)):
             "is_active": session.is_active,
             "human_mode": session.human_mode,
             "human_agent_assigned": session.human_agent_assigned,
+            "cleared_by_user": session.cleared_by_user,
+            "cleared_at": session.cleared_at,
             "message_count": len(session.messages),
             "user_name": session.user_name,
             "user_email": session.user_email,
@@ -112,12 +135,42 @@ async def get_admin_chat_session(session_id: str, _: AdminUser = Depends(get_cur
         "status": "ok",
         "session_id": session_id,
         "human_mode": session.human_mode,
+        "cleared_by_user": session.cleared_by_user,
+        "cleared_at": session.cleared_at,
         "messages": session.model_dump().get("messages", []),
         "admin_websocket": {
             "url": admin_ws_url,
             "token_required": True,
             "token_env": "ADMIN_AUTH_TOKEN"
         }
+    }
+
+
+@router.post("/chat/{session_id}/clear")
+async def clear_chat_session(session_id: str):
+    session = await ChatSession.find_one(ChatSession.session_id == session_id)
+    if not session:
+        return {
+            "status": "not_found",
+            "session_id": session_id
+        }
+
+    await _mark_session_cleared(session)
+    await manager.forward_to_admin(
+        session_id,
+        json.dumps({
+            "type": "session_cleared",
+            "session_id": session_id,
+            "cleared_by": "user",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+    )
+
+    return {
+        "status": "ok",
+        "session_id": session_id,
+        "cleared_by_user": True,
+        "message": "Session cleared by user"
     }
 
 
@@ -214,7 +267,56 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     try:
         while True:
             # 2. Receive User Message
-            data = await websocket.receive_text()
+            raw_data = await websocket.receive_text()
+            payload = _extract_json_payload(raw_data)
+
+            if payload and payload.get("type") == "ping":
+                await manager.send_personal_message(
+                    json.dumps({"type": "pong", "timestamp": datetime.now(timezone.utc).isoformat()}),
+                    websocket
+                )
+                continue
+
+            if payload and payload.get("type") == "clear_chat":
+                await _mark_session_cleared(session)
+                clear_event = {
+                    "type": "session_cleared",
+                    "session_id": session_id,
+                    "cleared_by": "user",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+                await manager.send_personal_message(json.dumps(clear_event), websocket)
+                await manager.forward_to_admin(session_id, json.dumps(clear_event))
+                continue
+
+            if payload and payload.get("type") == "audio":
+                audio_base64 = str(payload.get("audio_base64") or "").strip()
+                if not audio_base64:
+                    continue
+
+                audio_payload = {
+                    "type": "audio",
+                    "role": "user",
+                    "audio_base64": audio_base64,
+                    "mime_type": payload.get("mime_type") or "audio/webm",
+                    "duration_seconds": payload.get("duration_seconds"),
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+
+                user_msg = Message(role=MessageRole.USER, content=json.dumps(audio_payload))
+                session.messages.append(user_msg)
+                await session.save()
+
+                await manager.forward_to_admin(session_id, json.dumps(audio_payload))
+                continue
+
+            if payload and payload.get("type") == "message":
+                data = str(payload.get("content") or "").strip()
+            else:
+                data = raw_data
+
+            if not data.strip():
+                continue
 
             human_payload = _extract_human_support_payload(data)
             if human_payload:
@@ -390,7 +492,45 @@ async def admin_websocket_endpoint(websocket: WebSocket, session_id: str):
     try:
         while True:
             # You type a message
-            data = await websocket.receive_text()
+            raw_data = await websocket.receive_text()
+            payload = _extract_json_payload(raw_data)
+
+            if payload and payload.get("type") == "ping":
+                await manager.send_personal_message(
+                    json.dumps({"type": "pong", "timestamp": datetime.now(timezone.utc).isoformat()}),
+                    websocket
+                )
+                continue
+
+            if payload and payload.get("type") == "audio":
+                audio_base64 = str(payload.get("audio_base64") or "").strip()
+                if not audio_base64:
+                    continue
+
+                audio_payload = {
+                    "type": "audio",
+                    "role": "admin",
+                    "audio_base64": audio_base64,
+                    "mime_type": payload.get("mime_type") or "audio/webm",
+                    "duration_seconds": payload.get("duration_seconds"),
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+
+                admin_msg = Message(role=MessageRole.ASSISTANT, content=json.dumps(audio_payload))
+                if session:
+                    session.messages.append(admin_msg)
+                    await session.save()
+
+                await manager.forward_to_user(session_id, json.dumps(audio_payload))
+                continue
+
+            if payload and payload.get("type") == "message":
+                data = str(payload.get("content") or "").strip()
+            else:
+                data = raw_data
+
+            if not data.strip():
+                continue
             
             # Save it
             admin_msg = Message(role=MessageRole.ASSISTANT, content=data)
@@ -399,7 +539,15 @@ async def admin_websocket_endpoint(websocket: WebSocket, session_id: str):
                 await session.save()
 
             # Send to User
-            await manager.forward_to_user(session_id, data)
+            await manager.forward_to_user(
+                session_id,
+                json.dumps({
+                    "type": "message",
+                    "role": "admin",
+                    "content": data,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+            )
 
     except WebSocketDisconnect:
         manager.disconnect(session_id, is_admin=True)

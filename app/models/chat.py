@@ -38,6 +38,8 @@ class ChatSession(Document):
     is_active: bool = Field(default=True)
     human_mode: bool = Field(default=False, description="Indicates if human agent is handling the conversation")
     human_agent_assigned: bool = Field(default=False, description="Indicates if a human agent has been assigned to the chat session")
+    cleared_by_user: bool = Field(default=False, description="Set to true when visitor clears the chat from frontend")
+    cleared_at: Optional[datetime] = Field(default=None, description="Timestamp when visitor cleared chat")
     
     class Settings:
         name = 'chat_sessions'
