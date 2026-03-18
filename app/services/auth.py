@@ -1,6 +1,7 @@
 import hashlib
 import os
 import secrets
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -9,6 +10,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from itsdangerous import BadData, SignatureExpired, URLSafeTimedSerializer
 
 from ..models.admin import AdminUser
+
+logger = logging.getLogger(__name__)
 
 
 security = HTTPBearer(auto_error=False)
@@ -82,20 +85,36 @@ async def get_current_admin(
 
 async def get_admin_from_token_value(token: str) -> Optional[AdminUser]:
     if not token:
+        logger.debug("🔍 DEBUG: Token is empty/None")
         return None
 
     static_admin_token = os.getenv("ADMIN_AUTH_TOKEN", "")
+    logger.debug(f"🔍 DEBUG: Checking token. Static token exists: {bool(static_admin_token)}")
+    
     if static_admin_token and secrets.compare_digest(token, static_admin_token):
+        logger.info(f"✅ DEBUG: Token matches static ADMIN_AUTH_TOKEN")
         fallback_username = os.getenv("ADMIN_USERNAME", "mobadara")
-        return await AdminUser.find_one(AdminUser.username == fallback_username)
+        admin = await AdminUser.find_one(AdminUser.username == fallback_username)
+        logger.info(f"✅ DEBUG: Found admin user: {admin.username if admin else 'NOT FOUND'}")
+        return admin
 
+    logger.debug(f"🔍 DEBUG: Token doesn't match static token. Length: {len(token)}. Trying JWT decode...")
     try:
         data = decode_access_token(token)
-    except HTTPException:
+        logger.info(f"✅ DEBUG: JWT token decoded successfully")
+    except HTTPException as e:
+        logger.warning(f"❌ DEBUG: JWT decode failed: {e.detail}")
         return None
 
     user_id = data.get("sub")
     if not user_id:
+        logger.warning(f"❌ DEBUG: No user_id in JWT claims")
         return None
 
-    return await AdminUser.get(user_id)
+    try:
+        admin = await AdminUser.get(user_id)
+        logger.info(f"✅ DEBUG: Found admin user by ID: {admin.username if admin else 'NOT FOUND'}")
+        return admin
+    except Exception as e:
+        logger.warning(f"❌ DEBUG: Failed to get admin user by ID: {e}")
+        return None

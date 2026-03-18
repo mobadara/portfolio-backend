@@ -473,11 +473,21 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 async def admin_websocket_endpoint(websocket: WebSocket, session_id: str):
     # Security: Check authorization token (legacy static token or signed login token)
     auth_token = websocket.query_params.get("token")
+    logger.info(f"🔌 Admin WebSocket connection attempt for session {session_id}")
+    logger.info(f"🔌 DEBUG: auth_token received: {bool(auth_token)}, token length: {len(auth_token or '')}")
+    if auth_token:
+        logger.info(f"🔌 DEBUG: token (first 10 chars): {auth_token[:10]}...")
+    
     admin_user = await get_admin_from_token_value(auth_token or "")
+    logger.info(f"🔌 DEBUG: admin_user found: {bool(admin_user)}")
+    
     if not admin_user:
+        logger.warning(f"❌ Unauthorized admin access attempt for session {session_id}")
+        logger.warning(f"❌ DEBUG: Token validation failed for token: {auth_token[:20] if auth_token else 'None'}...")
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        logger.warning(f"Unauthorized admin access attempt for session {session_id}")
         return
+    
+    logger.info(f"✅ Admin {admin_user.username} authorized for session {session_id}")
     
     await manager.connect(websocket, session_id, is_admin=True)
     
