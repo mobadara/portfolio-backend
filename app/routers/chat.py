@@ -161,6 +161,32 @@ async def request_human_mode(session_id: str):
     }
 
 
+@router.delete("/admin/chat_sessions/{session_id}")
+async def delete_chat_session(session_id: str):
+    """Admin endpoint to delete a chat session"""
+    session = await ChatSession.find_one(ChatSession.session_id == session_id)
+    if not session:
+        return {"status": "not_found", "session_id": session_id}
+    
+    await session.delete()
+    manager.disconnect(session_id)  # Ensure all WebSocket connections are closed
+    
+    logger.info(f"Chat session {session_id} deleted by admin")
+    return {"status": "ok", "message": f"Session {session_id} deleted"}
+
+
+@router.delete("/admin/chat_sessions")
+async def delete_all_chat_sessions():
+    """Admin endpoint to delete all chat sessions - use with caution!"""
+    sessions = await ChatSession.find_all().to_list()
+    for session in sessions:
+        await session.delete()
+        manager.disconnect(session.session_id)
+    
+    logger.info("All chat sessions deleted by admin")
+    return {"status": "ok", "message": "All sessions deleted", "total_deleted": len(sessions)} 
+
+
 @router.websocket("/chat/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     client = _get_groq_client()
