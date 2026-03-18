@@ -12,8 +12,11 @@ import certifi
 from datetime import datetime, timezone
 import time
 
-from .routers import chat
+from .routers import admin, chat, project
+from .models.admin import AdminUser, ContactMessage
 from .models.chat import ChatSession
+from .models.project import Project
+from .routers.admin import seed_default_admin
 from .services.email import send_lead_notification
 
 load_dotenv()
@@ -31,7 +34,11 @@ async def lifespan(app: FastAPI):
         )
     raw_db = client[os.getenv('DB_NAME', 'portfolio_db')]
     database = cast(AsyncIOMotorDatabase, raw_db)
-    await init_beanie(database=database, document_models=[ChatSession])   # pyright: ignore[reportArgumentType]
+    await init_beanie(
+        database=database,
+        document_models=[ChatSession, AdminUser, ContactMessage, Project]
+    )   # pyright: ignore[reportArgumentType]
+    await seed_default_admin()
     app.state.mongo_client = client
     app.state.mongo_database = database
 
@@ -66,6 +73,8 @@ app.add_middleware(
 
 app.include_router(chat.router,
                    tags=["Chat"])
+app.include_router(admin.router, tags=["Admin"])
+app.include_router(project.router, tags=["Projects"])
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
 from groq import Groq
 from typing import cast, Optional
 import os
@@ -7,6 +7,8 @@ import json
 import re
 
 from ..models.chat import ChatSession, Message, MessageRole
+from ..models.admin import AdminUser
+from ..services.auth import get_admin_from_token_value, get_current_admin
 from ..services.websocket_manager import manager
 from ..services.email import send_lead_notification
 from ..services.prompts import SYSTEM_PROMPT
@@ -57,7 +59,7 @@ def _is_valid_email(email: str) -> bool:
 
 
 @router.get("/admin/sessions")
-async def get_admin_sessions():
+async def get_admin_sessions(_: AdminUser = Depends(get_current_admin)):
     """List all active chat sessions with basic info"""
     sessions = await ChatSession.find_all().to_list()
     
@@ -96,7 +98,7 @@ def _get_groq_client() -> Optional[Groq]:
 
 
 @router.get("/admin/chat_sessions/{session_id}")
-async def get_admin_chat_session(session_id: str):
+async def get_admin_chat_session(session_id: str, _: AdminUser = Depends(get_current_admin)):
     session = await ChatSession.find_one(ChatSession.session_id == session_id)
     if not session:
         return {"status": "not_found", "session_id": session_id}
@@ -162,7 +164,7 @@ async def request_human_mode(session_id: str):
 
 
 @router.delete("/admin/chat_sessions/{session_id}")
-async def delete_chat_session(session_id: str):
+async def delete_chat_session(session_id: str, _: AdminUser = Depends(get_current_admin)):
     """Admin endpoint to delete a chat session"""
     session = await ChatSession.find_one(ChatSession.session_id == session_id)
     if not session:
@@ -176,7 +178,7 @@ async def delete_chat_session(session_id: str):
 
 
 @router.delete("/admin/chat_sessions")
-async def delete_all_chat_sessions():
+async def delete_all_chat_sessions(_: AdminUser = Depends(get_current_admin)):
     """Admin endpoint to delete all chat sessions - use with caution!"""
     sessions = await ChatSession.find_all().to_list()
     for session in sessions:
@@ -365,9 +367,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         
 @router.websocket("/ws/admin/{session_id}")
 async def admin_websocket_endpoint(websocket: WebSocket, session_id: str):
-    # Security: Check authorization token
+    # Security: Check authorization token (legacy static token or signed login token)
     auth_token = websocket.query_params.get("token")
-    if not auth_token or auth_token != os.getenv("ADMIN_AUTH_TOKEN", ""):
+    admin_user = await get_admin_from_token_value(auth_token or "")
+    if not admin_user:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         logger.warning(f"Unauthorized admin access attempt for session {session_id}")
         return
