@@ -135,6 +135,7 @@ async def get_admin_chat_session(session_id: str, _: AdminUser = Depends(get_cur
     return {
         "status": "ok",
         "session_id": session_id,
+        "is_active": session.is_active,
         "human_mode": session.human_mode,
         "cleared_by_user": session.cleared_by_user,
         "cleared_at": session.cleared_at,
