@@ -138,10 +138,7 @@ async def get_admin_chat_session(session_id: str, _: AdminUser = Depends(get_cur
     if not session:
         return {"status": "not_found", "session_id": session_id}
 
-    backend_url = os.getenv("BACKEND_URL", "https://portfolio-backend-tjq3.onrender.com").rstrip("/")
-    derived_ws_base = _to_ws_base(backend_url)
-    admin_ws_base = _to_ws_base(os.getenv("ADMIN_WS_BASE", derived_ws_base).rstrip("/"))
-    admin_ws_url = f"{admin_ws_base}/ws/admin/{session_id}"
+    admin_ws_url = f"/ws/admin/{session_id}"
 
     return {
         "status": "ok",
@@ -460,11 +457,27 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             # 3. Check Mode: HUMAN or AI?
             if session.human_mode:
                 # A. Human Mode: Forward to Admin only
-                await manager.forward_to_admin(session_id, f"User: {data}")
+                await manager.forward_to_admin(
+                    session_id,
+                    json.dumps({
+                        "type": "message",
+                        "role": "user",
+                        "content": data,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    })
+                )
             
             else:
                 # B. AI Mode: Forward to Admin (so they can watch) AND Process
-                await manager.forward_to_admin(session_id, f"User: {data}")
+                await manager.forward_to_admin(
+                    session_id,
+                    json.dumps({
+                        "type": "message",
+                        "role": "user",
+                        "content": data,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    })
+                )
 
                 # Prepare context for Groq
                 history = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -537,7 +550,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     await session.save()
                     
                     await manager.send_personal_message(ai_response, websocket)
-                    await manager.forward_to_admin(session_id, f"AI: {ai_response}")
+                    await manager.forward_to_admin(
+                        session_id,
+                        json.dumps({
+                            "type": "message",
+                            "role": "assistant",
+                            "content": ai_response,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+                    )
 
     except WebSocketDisconnect:
         manager.disconnect(session_id)
@@ -569,14 +590,24 @@ async def admin_websocket_endpoint(websocket: WebSocket, session_id: str):
     await manager.connect(websocket, session_id, is_admin=True)
     
     # Notify Admin they are connected
-    await websocket.send_text("--- Connected to Session ---")
+    await websocket.send_text(json.dumps({
+        "type": "system",
+        "role": "system",
+        "content": "Connected to session",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }))
     
     # Turn on Human Mode
     session = await ChatSession.find_one(ChatSession.session_id == session_id)
     if session:
         session.human_mode = True
         await session.save()
-        await websocket.send_text("--- HUMAN MODE ACTIVATED. AI SILENCED. ---")
+        await websocket.send_text(json.dumps({
+            "type": "system",
+            "role": "system",
+            "content": "Human mode activated. AI responses paused.",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }))
 
     try:
         while True:
