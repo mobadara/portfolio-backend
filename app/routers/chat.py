@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from groq import Groq
 from typing import cast, Optional
 import os
@@ -6,10 +6,11 @@ import logging
 import json
 import re
 from datetime import datetime, timezone
+from pydantic import BaseModel, Field
 
 from ..models.chat import ChatSession, Message, MessageRole
 from ..models.admin import AdminUser
-from ..services.auth import get_admin_from_token_value, get_current_admin
+from ..services.auth import ensure_admin_role, get_admin_from_token_value, get_current_admin, verify_password
 from ..services.websocket_manager import manager
 from ..services.email import send_lead_notification, send_session_deleted_notification
 from ..services.prompts import SYSTEM_PROMPT
@@ -17,6 +18,10 @@ from ..services.prompts import SYSTEM_PROMPT
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class BulkDeleteRequest(BaseModel):
+    admin_password: str = Field(..., min_length=1)
 
 
 def _extract_human_support_payload(data: str) -> Optional[dict]:
@@ -278,8 +283,26 @@ async def delete_chat_session(session_id: str, _: AdminUser = Depends(get_curren
 
 
 @router.delete("/admin/chat_sessions")
-async def delete_all_chat_sessions(_: AdminUser = Depends(get_current_admin)):
-    """Admin endpoint to delete all chat sessions - use with caution!"""
+async def delete_all_chat_sessions(current_admin: AdminUser = Depends(get_current_admin)):
+    ensure_admin_role(current_admin)
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Use /admin/chat_sessions/delete-all with admin password confirmation"
+    )
+
+
+@router.post("/admin/chat_sessions/delete-all")
+async def delete_all_chat_sessions_secure(
+    payload: BulkDeleteRequest,
+    current_admin: AdminUser = Depends(get_current_admin)
+):
+    ensure_admin_role(current_admin)
+
+    admin_password = payload.admin_password
+
+    if not verify_password(admin_password, current_admin.password_hash, current_admin.password_salt):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin password")
+
     sessions = await ChatSession.find_all().to_list()
     for session in sessions:
         delete_event = json.dumps({
@@ -293,9 +316,9 @@ async def delete_all_chat_sessions(_: AdminUser = Depends(get_current_admin)):
         await manager.forward_to_admin(session.session_id, delete_event)
         await session.delete()
         await manager.close_session_connections(session.session_id)
-    
-    logger.info("All chat sessions deleted by admin")
-    return {"status": "ok", "message": "All sessions deleted", "total_deleted": len(sessions)} 
+
+    logger.info("All chat sessions deleted by admin (secure endpoint)")
+    return {"status": "ok", "message": "All sessions deleted", "total_deleted": len(sessions)}
 
 
 @router.websocket("/chat/{session_id}")

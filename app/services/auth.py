@@ -118,3 +118,12 @@ async def get_admin_from_token_value(token: str) -> Optional[AdminUser]:
     except Exception as e:
         logger.warning(f"❌ DEBUG: Failed to get admin user by ID: {e}")
         return None
+
+
+def ensure_admin_role(admin_user: AdminUser) -> None:
+    role = str(admin_user.role or "").strip().lower()
+    if role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can perform this action"
+        )

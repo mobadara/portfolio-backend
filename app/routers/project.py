@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from ..models.admin import AdminUser
 from ..models.project import Project, ProjectLinks
-from ..services.auth import get_current_admin
+from ..services.auth import ensure_admin_role, get_current_admin, verify_password
 
 router = APIRouter()
 
@@ -26,6 +26,10 @@ class ProjectPayload(BaseModel):
 	metrics: Dict[str, str] = Field(default_factory=dict)
 	order: int = 0
 	featured: bool = False
+
+
+class BulkDeleteRequest(BaseModel):
+	admin_password: str = Field(..., min_length=1)
 
 
 def _normalize_tech_stack(payload: ProjectPayload) -> List[str]:
@@ -152,3 +156,24 @@ async def delete_project(project_id: str, _: AdminUser = Depends(get_current_adm
 
 	await project.delete()
 	return {"status": "ok", "message": "Project deleted"}
+
+
+@router.post("/admin/projects/delete-all")
+async def delete_all_projects(
+	payload: BulkDeleteRequest,
+	current_admin: AdminUser = Depends(get_current_admin)
+):
+	ensure_admin_role(current_admin)
+
+	if not verify_password(payload.admin_password, current_admin.password_hash, current_admin.password_salt):
+		raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin password")
+
+	projects = await Project.find_all().to_list()
+	for project in projects:
+		await project.delete()
+
+	return {
+		"status": "ok",
+		"message": "All projects deleted",
+		"total_deleted": len(projects)
+	}

@@ -8,6 +8,7 @@ from pydantic import BaseModel, EmailStr, Field
 from ..models.admin import AdminUser, ContactMessage
 from ..services.auth import (
     create_access_token,
+    ensure_admin_role,
     get_current_admin,
     hash_password,
     verify_password,
@@ -55,6 +56,10 @@ class ContactMessageUpdateRequest(BaseModel):
     subject: Optional[str] = None
     message: Optional[str] = None
     status: Optional[str] = None
+
+
+class BulkDeleteRequest(BaseModel):
+    admin_password: str = Field(..., min_length=1)
 
 
 def _to_iso(value: Optional[datetime]) -> Optional[str]:
@@ -265,6 +270,27 @@ async def update_contact_message(
     message.updated_at = datetime.now(timezone.utc)
     await message.save()
     return _serialize_message(message)
+
+
+@router.post("/admin/contact-messages/delete-all")
+async def delete_all_contact_messages(
+    payload: BulkDeleteRequest,
+    current_admin: AdminUser = Depends(get_current_admin)
+):
+    ensure_admin_role(current_admin)
+
+    if not verify_password(payload.admin_password, current_admin.password_hash, current_admin.password_salt):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin password")
+
+    messages = await ContactMessage.find_all().to_list()
+    for message in messages:
+        await message.delete()
+
+    return {
+        "status": "ok",
+        "message": "All contact messages deleted",
+        "total_deleted": len(messages)
+    }
 
 
 @router.delete("/admin/contact-messages/{message_id}")
