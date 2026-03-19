@@ -226,7 +226,7 @@ async def create_contact_message(payload: ContactMessageCreateRequest):
 
 @router.get("/admin/contact-messages")
 async def get_contact_messages(_: AdminUser = Depends(get_current_admin)):
-    messages = await ContactMessage.find_all().sort(-ContactMessage.created_at).to_list()
+    messages = await ContactMessage.find_all().sort([("created_at", -1)]).to_list()
     return {"messages": [_serialize_message(item) for item in messages]}
 
 

@@ -29,6 +29,26 @@ class ConnectionManager:
             if session_id in self.active_connections:
                 del self.active_connections[session_id]
                 logger.info(f"User disconnected from session {session_id}")
+
+    async def close_session_connections(self, session_id: str) -> None:
+        """Close both user and admin connections for a session if open."""
+        user_socket: Optional[WebSocket] = self.active_connections.get(session_id)
+        admin_socket: Optional[WebSocket] = self.admin_connections.get(session_id)
+
+        if user_socket:
+            try:
+                await user_socket.close(code=1000)
+            except Exception as e:
+                logger.warning(f"Failed closing user websocket for {session_id}: {str(e)}")
+
+        if admin_socket:
+            try:
+                await admin_socket.close(code=1000)
+            except Exception as e:
+                logger.warning(f"Failed closing admin websocket for {session_id}: {str(e)}")
+
+        self.disconnect(session_id)
+        self.disconnect(session_id, is_admin=True)
                 
     async def send_personal_message(self, message: str, websocket: WebSocket) -> None:
         """Send message to specific WebSocket"""

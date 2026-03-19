@@ -11,7 +11,7 @@ from ..models.chat import ChatSession, Message, MessageRole
 from ..models.admin import AdminUser
 from ..services.auth import get_admin_from_token_value, get_current_admin
 from ..services.websocket_manager import manager
-from ..services.email import send_lead_notification
+from ..services.email import send_lead_notification, send_session_deleted_notification
 from ..services.prompts import SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,12 @@ def _extract_json_payload(raw_data: str) -> Optional[dict]:
     except json.JSONDecodeError:
         return None
     return None
+
+
+def _to_ws_base(url: str) -> str:
+    if not url:
+        return ""
+    return url.replace("https://", "wss://").replace("http://", "ws://")
 
 
 async def _mark_session_cleared(session: ChatSession) -> None:
@@ -128,8 +134,8 @@ async def get_admin_chat_session(session_id: str, _: AdminUser = Depends(get_cur
         return {"status": "not_found", "session_id": session_id}
 
     backend_url = os.getenv("BACKEND_URL", "https://portfolio-backend-tjq3.onrender.com").rstrip("/")
-    derived_ws_base = backend_url.replace("https://", "wss://").replace("http://", "ws://")
-    admin_ws_base = os.getenv("ADMIN_WS_BASE", derived_ws_base)
+    derived_ws_base = _to_ws_base(backend_url)
+    admin_ws_base = _to_ws_base(os.getenv("ADMIN_WS_BASE", derived_ws_base).rstrip("/"))
     admin_ws_url = f"{admin_ws_base}/ws/admin/{session_id}"
 
     return {
@@ -145,6 +151,26 @@ async def get_admin_chat_session(session_id: str, _: AdminUser = Depends(get_cur
             "token_required": True,
             "token_env": "ADMIN_AUTH_TOKEN"
         }
+    }
+
+
+@router.get("/chat/{session_id}/status")
+async def get_chat_session_status(session_id: str):
+    session = await ChatSession.find_one(ChatSession.session_id == session_id)
+    if not session:
+        return {
+            "status": "not_found",
+            "session_id": session_id,
+            "exists": False
+        }
+
+    return {
+        "status": "ok",
+        "session_id": session_id,
+        "exists": True,
+        "is_active": session.is_active,
+        "human_mode": session.human_mode,
+        "cleared_by_user": session.cleared_by_user
     }
 
 
@@ -224,9 +250,28 @@ async def delete_chat_session(session_id: str, _: AdminUser = Depends(get_curren
     session = await ChatSession.find_one(ChatSession.session_id == session_id)
     if not session:
         return {"status": "not_found", "session_id": session_id}
+
+    user_email = str(session.user_email) if session.user_email else ""
+
+    delete_event = json.dumps({
+        "type": "session_deleted",
+        "session_id": session_id,
+        "deleted_by": "admin",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "reason": "This chat session was deleted by the admin team."
+    })
+
+    await manager.forward_to_user(session_id, delete_event)
+    await manager.forward_to_admin(session_id, delete_event)
+
+    if user_email:
+        try:
+            await send_session_deleted_notification(user_email, session_id)
+        except Exception as exc:
+            logger.error(f"Failed to send session deletion email for {session_id}: {str(exc)}")
     
     await session.delete()
-    manager.disconnect(session_id)  # Ensure all WebSocket connections are closed
+    await manager.close_session_connections(session_id)
     
     logger.info(f"Chat session {session_id} deleted by admin")
     return {"status": "ok", "message": f"Session {session_id} deleted"}
@@ -237,8 +282,17 @@ async def delete_all_chat_sessions(_: AdminUser = Depends(get_current_admin)):
     """Admin endpoint to delete all chat sessions - use with caution!"""
     sessions = await ChatSession.find_all().to_list()
     for session in sessions:
+        delete_event = json.dumps({
+            "type": "session_deleted",
+            "session_id": session.session_id,
+            "deleted_by": "admin",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "reason": "This chat session was deleted by the admin team."
+        })
+        await manager.forward_to_user(session.session_id, delete_event)
+        await manager.forward_to_admin(session.session_id, delete_event)
         await session.delete()
-        manager.disconnect(session.session_id)
+        await manager.close_session_connections(session.session_id)
     
     logger.info("All chat sessions deleted by admin")
     return {"status": "ok", "message": "All sessions deleted", "total_deleted": len(sessions)} 
