@@ -53,6 +53,8 @@ async def send_lead_notification(lead_data: Dict[str, Any], session_id: str) -> 
     Sends an email using Brevo HTTP API (Bypasses SMTP port blocking).
     """
     admin_link = f"{FRONTEND_URL}/admin/chat/{session_id}"
+    # Debug: Log the incoming lead_data for inspection
+    logger.info(f"[Lead Email Debug] Received lead_data: {lead_data}")
     lead_name = lead_data.get('name', 'N/A')
     lead_email = lead_data.get('email', 'N/A')
     lead_phone = lead_data.get('phone', 'N/A')
@@ -66,8 +68,8 @@ async def send_lead_notification(lead_data: Dict[str, Any], session_id: str) -> 
             parsed = phonenumbers.parse(lead_phone, None)
             lead_country = phonenumbers.region_code_for_number(parsed) or 'N/A'
             lead_local_phone = str(parsed.national_number) if parsed.national_number else 'N/A'
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[Lead Email Debug] Phone parsing failed: {e}")
     lead_notes = lead_data.get('notes', 'N/A')
 
     html_content = f"""

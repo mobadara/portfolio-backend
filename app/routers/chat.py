@@ -226,7 +226,10 @@ async def request_human_mode(session_id: str):
         lead_dict = {
             "name": session.user_name or "Chat User",
             "email": session.user_email or "Not provided",
-            "phone": session.user_phone or "Human assistance requested"
+            "phone": session.user_phone or "Human assistance requested",
+            "notes": "Human mode requested",
+            "country_code": getattr(session, 'country_code', None) or None,
+            "phone_local": getattr(session, 'phone_local', None) or None
         }
         await send_lead_notification(lead_dict, session_id)
         logger.info(f"Human mode requested for session {session_id}, notification sent")
@@ -423,7 +426,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 lead_dict = {
                     "name": session.user_name or captured_name,
                     "email": session.user_email or captured_email,
-                    "phone": session.user_phone or captured_phone
+                    "phone": session.user_phone or captured_phone,
+                    "notes": human_payload.get('message', ''),
+                    "country_code": getattr(session, 'country_code', None) or None,
+                    "phone_local": getattr(session, 'phone_local', None) or None
                 }
 
                 try:
@@ -518,7 +524,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         lead_dict = {
                             "name": "Interested Visitor",
                             "email": "Not provided",
-                            "phone": "Not provided"
+                            "phone": "Not provided",
+                            "notes": "Lead captured via AI response",
+                            "country_code": None,
+                            "phone_local": None
                         }
                         
                         # Try to parse the extracted info
