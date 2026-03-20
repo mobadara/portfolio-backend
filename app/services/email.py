@@ -58,6 +58,16 @@ async def send_lead_notification(lead_data: Dict[str, Any], session_id: str) -> 
     lead_phone = lead_data.get('phone', 'N/A')
     lead_country = lead_data.get('country_code', 'N/A')
     lead_local_phone = lead_data.get('phone_local', 'N/A')
+
+    # Infer country and local phone if not provided
+    if (lead_country == 'N/A' or not lead_country) and lead_phone and lead_phone.startswith('+'):
+        import phonenumbers
+        try:
+            parsed = phonenumbers.parse(lead_phone, None)
+            lead_country = phonenumbers.region_code_for_number(parsed) or 'N/A'
+            lead_local_phone = str(parsed.national_number) if parsed.national_number else 'N/A'
+        except Exception:
+            pass
     lead_notes = lead_data.get('notes', 'N/A')
 
     html_content = f"""
