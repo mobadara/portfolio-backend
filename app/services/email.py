@@ -56,6 +56,9 @@ async def send_lead_notification(lead_data: Dict[str, Any], session_id: str) -> 
     lead_name = lead_data.get('name', 'N/A')
     lead_email = lead_data.get('email', 'N/A')
     lead_phone = lead_data.get('phone', 'N/A')
+    lead_country = lead_data.get('country_code', 'N/A')
+    lead_local_phone = lead_data.get('phone_local', 'N/A')
+    lead_notes = lead_data.get('notes', 'N/A')
 
     html_content = f"""
         <html>
@@ -93,6 +96,18 @@ async def send_lead_notification(lead_data: Dict[str, Any], session_id: str) -> 
                                             <tr>
                                                 <td style="width:120px;font-size:13px;color:#64748b;">Phone</td>
                                                 <td style="font-size:15px;font-weight:600;color:#0f172a;">{lead_phone}</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="width:120px;font-size:13px;color:#64748b;">Country</td>
+                                                <td style="font-size:15px;font-weight:600;color:#0f172a;">{lead_country}</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="width:120px;font-size:13px;color:#64748b;">Local Phone</td>
+                                                <td style="font-size:15px;font-weight:600;color:#0f172a;">{lead_local_phone}</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="width:120px;font-size:13px;color:#64748b;">Notes</td>
+                                                <td style="font-size:15px;color:#334155;">{escape(lead_notes)}</td>
                                             </tr>
                                             <tr>
                                                 <td style="width:120px;font-size:13px;color:#64748b;">Session ID</td>
