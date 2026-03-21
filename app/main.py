@@ -49,8 +49,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Portfolio Chat API",
-    description="AI-powered chat with human handoff capability",
+    title="Muyiwa Obadara's Portfolio Backend API",
+    description="API for managing chat sessions, admin users, contact messages, and projects for Muyiwa Obadara's portfolio website.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -59,6 +59,7 @@ origins = [
     '*',
     r'^https?://.*\.vercel\.app$',
     'http://localhost:3000',
+    'http://localhost:5173',
 ]
 
 # CORS Middleware
