@@ -204,23 +204,38 @@ async def clear_chat_session(session_id: str):
     }
 
 
+
+from fastapi import Request
+
 @router.post("/chat/{session_id}/request-human")
-async def request_human_mode(session_id: str):
+async def request_human_mode(session_id: str, request: Request):
     """Enable human mode for a session - user requests to speak with a human"""
     session = await ChatSession.find_one(ChatSession.session_id == session_id)
-    
     if not session:
         return {
             "status": "error",
             "message": "Session not found",
             "session_id": session_id
         }
-    
+
+    # Parse incoming JSON for country_code and phone_local
+    try:
+        data = await request.json()
+        country_code = data.get("country_code")
+        phone_local = data.get("phone_local")
+        if country_code:
+            session.country_code = country_code
+        if phone_local:
+            session.phone_local = phone_local
+        await session.save()
+    except Exception as e:
+        logger.warning(f"Could not parse country_code/phone_local from request: {e}")
+
     # Enable human mode
     session.human_mode = True
     session.human_agent_assigned = False  # Mark as pending assignment
     await session.save()
-    
+
     # Send notification email
     try:
         lead_dict = {
@@ -235,12 +250,12 @@ async def request_human_mode(session_id: str):
         logger.info(f"Human mode requested for session {session_id}, notification sent")
     except Exception as e:
         logger.error(f"Failed to send notification for session {session_id}: {str(e)}")
-    
+
     # Notify user and admin via WebSocket if connected
     user_message = "I'm connecting you with Muyiwa now. He'll be with you shortly! 👋"
     await manager.forward_to_user(session_id, user_message)
     await manager.forward_to_admin(session_id, f"User requested human assistance in session {session_id}")
-    
+
     return {
         "status": "ok",
         "message": "Human mode enabled",
