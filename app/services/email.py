@@ -55,22 +55,7 @@ async def send_lead_notification(lead_data: Dict[str, Any], session_id: str) -> 
     admin_link = f"{FRONTEND_URL}/admin/chat/{session_id}"
     # Debug: Log the incoming lead_data for inspection
     logger.info(f"[Lead Email Debug] Received lead_data: {lead_data}")
-    lead_name = lead_data.get('name', 'N/A')
-    lead_email = lead_data.get('email', 'N/A')
-    lead_phone = lead_data.get('phone', 'N/A')
-    lead_country = lead_data.get('country_code', 'N/A')
-    lead_local_phone = lead_data.get('phone_local', 'N/A')
-
     # Infer country and local phone if not provided
-    if (lead_country == 'N/A' or not lead_country) and lead_phone and lead_phone.startswith('+'):
-        import phonenumbers
-        try:
-            parsed = phonenumbers.parse(lead_phone, None)
-            lead_country = phonenumbers.region_code_for_number(parsed) or 'N/A'
-            lead_local_phone = str(parsed.national_number) if parsed.national_number else 'N/A'
-        except Exception as e:
-            logger.warning(f"[Lead Email Debug] Phone parsing failed: {e}")
-    lead_notes = lead_data.get('notes', 'N/A')
 
     html_content = f"""
         <html>
@@ -96,31 +81,7 @@ async def send_lead_notification(lead_data: Dict[str, Any], session_id: str) -> 
 
                                 <tr>
                                     <td style="padding:0 24px 8px;">
-                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 10px;">
-                                            <tr>
-                                                <td style="width:120px;font-size:13px;color:#64748b;">Name</td>
-                                                <td style="font-size:15px;font-weight:600;color:#0f172a;">{lead_name}</td>
-                                            </tr>
-                                            <tr>
-                                                <td style="width:120px;font-size:13px;color:#64748b;">Email</td>
-                                                <td style="font-size:15px;font-weight:600;color:#0f172a;">{lead_email}</td>
-                                            </tr>
-                                            <tr>
-                                                <td style="width:120px;font-size:13px;color:#64748b;">Phone</td>
-                                                <td style="font-size:15px;font-weight:600;color:#0f172a;">{lead_phone}</td>
-                                            </tr>
-                                            <tr>
-                                                <td style="width:120px;font-size:13px;color:#64748b;">Country</td>
-                                                <td style="font-size:15px;font-weight:600;color:#0f172a;">{lead_country}</td>
-                                            </tr>
-                                            <tr>
-                                                <td style="width:120px;font-size:13px;color:#64748b;">Local Phone</td>
-                                                <td style="font-size:15px;font-weight:600;color:#0f172a;">{lead_local_phone}</td>
-                                            </tr>
-                                            <tr>
-                                                <td style="width:120px;font-size:13px;color:#64748b;">Notes</td>
-                                                <td style="font-size:15px;color:#334155;">{escape(lead_notes)}</td>
-                                            </tr>
+                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 10px;">            
                                             <tr>
                                                 <td style="width:120px;font-size:13px;color:#64748b;">Session ID</td>
                                                 <td style="font-size:13px;color:#334155;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">{session_id}</td>
