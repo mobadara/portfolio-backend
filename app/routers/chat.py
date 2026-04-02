@@ -383,6 +383,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 await manager.forward_to_admin(session_id, json.dumps(clear_event))
                 continue
 
+            # --- NEW INTERCEPTOR: Handle Frontend returning to AI Mode ---
+            if payload and payload.get("type") == "leave_human_mode":
+                session.human_mode = False
+                await session.save()
+                logger.info(f"Session {session_id} returned to AI mode via frontend event.")
+                continue
+
             if payload and payload.get("type") == "audio":
                 audio_base64 = str(payload.get("audio_base64") or "").strip()
                 if not audio_base64:
