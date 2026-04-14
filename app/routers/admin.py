@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from beanie import PydanticObjectId
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, EmailStr, Field
 
 from ..models.admin import AdminUser, ContactMessage
@@ -15,6 +16,38 @@ from ..services.auth import (
 )
 
 router = APIRouter()
+UPLOADS_DIR = Path(__file__).resolve().parents[2] / "uploads"
+
+
+def _ensure_uploads_dir() -> None:
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _remove_previous(prefix: str) -> None:
+    for existing_file in UPLOADS_DIR.glob(f"{prefix}.*"):
+        existing_file.unlink(missing_ok=True)
+
+
+def _extension_from_filename(filename: Optional[str]) -> str:
+    if not filename:
+        return ""
+    return Path(filename).suffix.lower()
+
+
+def _latest_uploaded_file(prefix: str) -> Optional[Path]:
+    _ensure_uploads_dir()
+    candidates = sorted(
+        UPLOADS_DIR.glob(f"{prefix}.*"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+async def _save_uploaded_file(file: UploadFile, destination: Path) -> int:
+    content = await file.read()
+    destination.write_bytes(content)
+    return len(content)
 
 
 class AdminLoginRequest(BaseModel):
@@ -301,3 +334,85 @@ async def delete_contact_message(message_id: str, _: AdminUser = Depends(get_cur
 
     await message.delete()
     return {"status": "ok", "message": "Message deleted"}
+
+
+@router.post("/admin/upload/resume")
+async def upload_latest_resume(
+    file: UploadFile = File(...),
+    _: AdminUser = Depends(get_current_admin),
+):
+    _ensure_uploads_dir()
+
+    allowed_extensions = {".pdf", ".doc", ".docx"}
+    extension = _extension_from_filename(file.filename)
+    if extension not in allowed_extensions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Resume must be a PDF, DOC, or DOCX file",
+        )
+
+    _remove_previous("resume")
+    filename = f"resume{extension}"
+    destination = UPLOADS_DIR / filename
+    file_size = await _save_uploaded_file(file, destination)
+
+    return {
+        "status": "ok",
+        "message": "Resume uploaded successfully",
+        "filename": filename,
+        "url": f"/uploads/{filename}",
+        "size": file_size,
+    }
+
+
+@router.get("/api/assets/resume")
+async def get_latest_resume_asset():
+    latest_resume = _latest_uploaded_file("resume")
+    if not latest_resume:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume not found")
+
+    return {
+        "filename": latest_resume.name,
+        "url": f"/uploads/{latest_resume.name}",
+    }
+
+
+@router.post("/admin/upload/portrait")
+async def upload_latest_portrait(
+    file: UploadFile = File(...),
+    _: AdminUser = Depends(get_current_admin),
+):
+    _ensure_uploads_dir()
+
+    allowed_extensions = {".jpg", ".jpeg", ".png", ".webp"}
+    extension = _extension_from_filename(file.filename)
+    if extension not in allowed_extensions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Portrait must be a JPG, JPEG, PNG, or WEBP image",
+        )
+
+    _remove_previous("portrait")
+    filename = f"portrait{extension}"
+    destination = UPLOADS_DIR / filename
+    file_size = await _save_uploaded_file(file, destination)
+
+    return {
+        "status": "ok",
+        "message": "Portrait uploaded successfully",
+        "filename": filename,
+        "url": f"/uploads/{filename}",
+        "size": file_size,
+    }
+
+
+@router.get("/api/assets/portrait")
+async def get_latest_portrait_asset():
+    latest_portrait = _latest_uploaded_file("portrait")
+    if not latest_portrait:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Portrait not found")
+
+    return {
+        "filename": latest_portrait.name,
+        "url": f"/uploads/{latest_portrait.name}",
+    }

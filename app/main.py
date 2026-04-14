@@ -2,8 +2,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from beanie import init_beanie
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 from typing import Any, Dict, cast
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
@@ -55,6 +57,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+BASE_DIR = Path(__file__).resolve().parents[1]
+UPLOADS_DIR = BASE_DIR / "uploads"
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
 origins = [
     '*',
     r'^https?://.*\.vercel\.app$',
@@ -76,6 +82,7 @@ app.include_router(chat.router,
                    tags=["Chat"])
 app.include_router(admin.router, tags=["Admin"])
 app.include_router(project.router, tags=["Projects"])
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
