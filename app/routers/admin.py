@@ -7,6 +7,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, EmailStr, Field
 
 from ..models.admin import AdminUser, ContactMessage
+from ..models.chat import ChatSession
+from ..models.project import Project
+from ..models.skill import Skill
 from ..services.auth import (
     create_access_token,
     ensure_admin_role,
@@ -124,6 +127,66 @@ def _serialize_message(message: ContactMessage) -> dict:
     }
 
 
+def _serialize_project(project: Project) -> dict:
+    links = project.links.model_dump() if project.links else {}
+    return {
+        "id": str(project.id),
+        "title": project.title,
+        "description": project.description,
+        "fullDescription": project.fullDescription,
+        "category": project.category,
+        "technologies": project.technologies,
+        "techStack": project.techStack,
+        "image": project.image,
+        "links": links,
+        "githubUrl": project.githubUrl or links.get("github"),
+        "liveUrl": project.liveUrl or links.get("demo"),
+        "metrics": project.metrics,
+        "order": project.order,
+        "featured": project.featured,
+        "created_at": _to_iso(project.created_at),
+        "updated_at": _to_iso(project.updated_at),
+    }
+
+
+def _serialize_skill(skill: Skill) -> dict:
+    return {
+        "id": str(skill.id),
+        "name": skill.name,
+        "level": skill.level,
+        "category": skill.category,
+        "icon": skill.icon,
+        "order": skill.order,
+        "created_at": _to_iso(skill.created_at),
+        "updated_at": _to_iso(skill.updated_at),
+    }
+
+
+def _serialize_session(session: ChatSession) -> dict:
+    last_activity = session.messages[-1].timestamp if session.messages else None
+    preview = "No messages yet"
+    if session.messages:
+        preview = (session.messages[-1].content or "").strip() or "No messages yet"
+
+    return {
+        "session_id": session.session_id,
+        "is_active": session.is_active,
+        "human_mode": session.human_mode,
+        "human_agent_assigned": session.human_agent_assigned,
+        "cleared_by_user": session.cleared_by_user,
+        "cleared_at": _to_iso(session.cleared_at),
+        "created_at": _to_iso(session.created_at),
+        "message_count": len(session.messages),
+        "user_name": session.user_name,
+        "user_email": str(session.user_email) if session.user_email else None,
+        "user_phone": session.user_phone,
+        "last_activity": _to_iso(last_activity),
+        "last_message": preview,
+        "is_read": bool(getattr(session, "is_read", False)),
+        "is_archived": bool(getattr(session, "is_archived", False)),
+    }
+
+
 async def seed_default_admin() -> None:
     username = "mobadara"
     password = "Admin321."
@@ -186,6 +249,45 @@ async def change_password(payload: ChangePasswordRequest, current_admin: AdminUs
 async def get_admin_users(_: AdminUser = Depends(get_current_admin)):
     users = await AdminUser.find_all().to_list()
     return {"users": [_serialize_admin(user) for user in users]}
+
+
+@router.get("/admin/overview")
+async def get_admin_overview(current_admin: AdminUser = Depends(get_current_admin)):
+    users = await AdminUser.find_all().to_list()
+    messages = await ContactMessage.find_all().sort([("created_at", -1)]).to_list()
+    projects = await Project.find_all().sort(+Project.order).to_list()
+    skills = await Skill.find_all().sort(+Skill.order).to_list()
+    sessions = await ChatSession.find_all().sort([("created_at", -1)]).to_list()
+
+    latest_resume = _latest_uploaded_file("resume")
+    latest_portrait = _latest_uploaded_file("portrait")
+
+    return {
+        "status": "ok",
+        "current_user": _serialize_admin(current_admin),
+        "counts": {
+            "users": len(users),
+            "messages": len(messages),
+            "projects": len(projects),
+            "skills": len(skills),
+            "sessions": len(sessions),
+        },
+        "users": [_serialize_admin(user) for user in users],
+        "messages": [_serialize_message(item) for item in messages],
+        "projects": [_serialize_project(project) for project in projects],
+        "skills": [_serialize_skill(skill) for skill in skills],
+        "sessions": [_serialize_session(session) for session in sessions],
+        "assets": {
+            "resume": {
+                "filename": latest_resume.name if latest_resume else None,
+                "url": f"/uploads/{latest_resume.name}" if latest_resume else None,
+            },
+            "portrait": {
+                "filename": latest_portrait.name if latest_portrait else None,
+                "url": f"/uploads/{latest_portrait.name}" if latest_portrait else None,
+            },
+        },
+    }
 
 
 @router.post("/admin/users")
