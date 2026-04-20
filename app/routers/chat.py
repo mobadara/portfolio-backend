@@ -1,9 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
 from groq import Groq
 from typing import cast, Optional
 import os
 import logging
 import json
+import base64
+import mimetypes
 import re
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field
@@ -12,7 +14,11 @@ from ..models.chat import ChatSession, Message, MessageRole
 from ..models.admin import AdminUser
 from ..services.auth import ensure_admin_role, get_admin_from_token_value, get_current_admin, verify_password
 from ..services.websocket_manager import manager
-from ..services.email import send_lead_notification, send_session_deleted_notification
+from ..services.email import (
+    send_lead_notification,
+    send_session_deleted_notification,
+    send_session_resume_notification,
+)
 from ..services.prompts import SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -74,6 +80,148 @@ def _extract_json_payload(raw_data: str) -> Optional[dict]:
     return None
 
 
+def _normalize_reply_payload(reply_to: object) -> Optional[dict]:
+    if not isinstance(reply_to, dict):
+        return None
+
+    normalized = {
+        "id": reply_to.get("id"),
+        "sender": (reply_to.get("sender") or "").strip() or None,
+        "previewText": (reply_to.get("previewText") or reply_to.get("preview_text") or reply_to.get("text") or reply_to.get("content") or "").strip() or None,
+    }
+
+    cleaned = {key: value for key, value in normalized.items() if value is not None}
+    return cleaned or None
+
+
+def _normalize_attachment_payload(attachment: object) -> Optional[dict]:
+    if not isinstance(attachment, dict):
+        return None
+
+    file_name = (attachment.get("file_name") or attachment.get("name") or "").strip()
+    mime_type = (attachment.get("mime_type") or attachment.get("type") or "").strip()
+    data_url = (attachment.get("data_url") or attachment.get("dataUrl") or attachment.get("url") or "").strip()
+    preview_type = (attachment.get("preview_type") or attachment.get("previewType") or "").strip()
+
+    normalized = {
+        "file_name": file_name or None,
+        "mime_type": mime_type or None,
+        "size_bytes": attachment.get("size_bytes") or attachment.get("sizeBytes"),
+        "data_url": data_url or None,
+        "preview_type": preview_type or ("image" if mime_type.startswith("image/") else "document" if mime_type else None),
+    }
+
+    cleaned = {key: value for key, value in normalized.items() if value is not None and value != ""}
+    return cleaned or None
+
+
+def _message_content_preview(raw_content: str) -> str:
+    content = (raw_content or "").strip()
+    if not content:
+        return ""
+
+    try:
+        parsed = json.loads(content)
+        if isinstance(parsed, dict):
+            if parsed.get("type") == "audio" and parsed.get("audio_base64"):
+                return "Voice message"
+
+            attachment = _normalize_attachment_payload(parsed.get("attachment"))
+            text = str(parsed.get("content") or parsed.get("text") or parsed.get("caption") or "").strip()
+            if attachment:
+                file_name = attachment.get("file_name") or "Attachment"
+                if text:
+                    return f"{text} [Attachment: {file_name}]"
+                return f"Attachment: {file_name}"
+
+            if text:
+                return text
+    except json.JSONDecodeError:
+        pass
+
+    return content
+
+
+def _build_message_payload(
+    role: str,
+    content: str,
+    timestamp: Optional[str] = None,
+    reply_to: Optional[dict] = None,
+    attachment: Optional[dict] = None,
+) -> dict:
+    payload = {
+        "type": "message",
+        "role": role,
+        "content": content,
+        "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
+    }
+
+    if reply_to:
+        payload["reply_to"] = reply_to
+
+    if attachment:
+        payload["attachment"] = attachment
+
+    return payload
+
+
+def _build_last_message_preview(messages: list[Message]) -> str:
+    if not messages:
+        return "No messages yet"
+
+    last = messages[-1]
+    raw_content = (last.content or "").strip()
+    if not raw_content:
+        return "No messages yet"
+
+    preview = _message_content_preview(raw_content)
+    if preview:
+        return preview
+
+    try:
+        parsed = json.loads(raw_content)
+        if isinstance(parsed, dict):
+            if parsed.get("type") == "audio" and parsed.get("audio_base64"):
+                return "Voice message"
+            content = str(parsed.get("content") or "").strip()
+            if content:
+                return content
+    except json.JSONDecodeError:
+        pass
+
+    return raw_content
+
+
+@router.post("/chat/{session_id}/attachment")
+async def upload_chat_attachment(
+    session_id: str,
+    file: UploadFile = File(...),
+    caption: str = Form(default=""),
+):
+    """Return attachment metadata and a preview payload for chat messages."""
+    session = await ChatSession.find_one(ChatSession.session_id == session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    mime_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
+    preview_type = "image" if mime_type.startswith("image/") else "document"
+    encoded_data = base64.b64encode(file_bytes).decode("utf-8")
+
+    return {
+        "session_id": session_id,
+        "file_name": file.filename,
+        "mime_type": mime_type,
+        "size_bytes": len(file_bytes),
+        "caption": caption.strip(),
+        "preview_type": preview_type,
+        "data_url": f"data:{mime_type};base64,{encoded_data}",
+    }
+
+
 def _to_ws_base(url: str) -> str:
     if not url:
         return ""
@@ -88,6 +236,43 @@ async def _mark_session_cleared(session: ChatSession) -> None:
     session.human_mode = False
     session.human_agent_assigned = False
     await session.save()
+
+
+async def _build_session_update_event(event_type: str, session_id: str, data: dict = None) -> str:
+    """Build a session update event to broadcast to admin subscribers"""
+    session = await ChatSession.find_one(ChatSession.session_id == session_id)
+    
+    session_data = {}
+    if session:
+        session_data = {
+            "session_id": session.session_id,
+            "is_active": session.is_active,
+            "human_mode": session.human_mode,
+            "human_agent_assigned": session.human_agent_assigned,
+            "cleared_by_user": session.cleared_by_user,
+            "cleared_at": session.cleared_at,
+            "created_at": session.created_at,
+            "message_count": len(session.messages),
+            "user_name": session.user_name,
+            "user_email": session.user_email,
+            "user_phone": session.user_phone,
+            "last_activity": session.messages[-1].timestamp if session.messages else None,
+            "last_message": _build_last_message_preview(session.messages),
+            "is_read": getattr(session, 'is_read', False),
+            "is_archived": getattr(session, 'is_archived', False)
+        }
+    
+    event = {
+        "type": event_type,
+        "session_id": session_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "session_data": session_data
+    }
+    
+    if data:
+        event.update(data)
+    
+    return json.dumps(event)
 
 
 @router.get("/admin/sessions")
@@ -108,7 +293,11 @@ async def get_admin_sessions(_: AdminUser = Depends(get_current_admin)):
             "message_count": len(session.messages),
             "user_name": session.user_name,
             "user_email": session.user_email,
-            "last_activity": session.messages[-1].timestamp if session.messages else None
+            "user_phone": session.user_phone,
+            "last_activity": session.messages[-1].timestamp if session.messages else None,
+            "last_message": _build_last_message_preview(session.messages),
+            "is_read": getattr(session, 'is_read', False),
+            "is_archived": getattr(session, 'is_archived', False)
         })
     
     return {
@@ -176,6 +365,28 @@ async def get_chat_session_status(session_id: str):
     }
 
 
+@router.get("/chat/{session_id}/history")
+async def get_chat_session_history(session_id: str):
+    session = await ChatSession.find_one(ChatSession.session_id == session_id)
+    if not session:
+        return {
+            "status": "not_found",
+            "session_id": session_id,
+            "exists": False,
+            "messages": []
+        }
+
+    return {
+        "status": "ok",
+        "session_id": session_id,
+        "exists": True,
+        "messages": session.model_dump().get("messages", []),
+        "human_mode": session.human_mode,
+        "is_active": session.is_active,
+        "cleared_by_user": session.cleared_by_user,
+    }
+
+
 @router.post("/chat/{session_id}/clear")
 async def clear_chat_session(session_id: str):
     session = await ChatSession.find_one(ChatSession.session_id == session_id)
@@ -218,15 +429,32 @@ async def request_human_mode(session_id: str, request: Request):
             "session_id": session_id
         }
 
-    # Parse incoming JSON for country_code and phone_local
+    # Parse incoming JSON for lead details and normalize phone fields
     try:
         data = await request.json()
         country_code = data.get("country_code")
         phone_local = data.get("phone_local")
+        full_phone = str(data.get("phone") or data.get("user_phone") or "").strip()
+        user_name = str(data.get("name") or data.get("user_name") or "").strip()
+        user_email = str(data.get("email") or data.get("user_email") or "").strip()
+
+        if user_name:
+            session.user_name = user_name
+        if user_email and _is_valid_email(user_email):
+            session.user_email = user_email
+
         if country_code:
             session.country_code = country_code
         if phone_local:
             session.phone_local = phone_local
+
+        if full_phone:
+            session.user_phone = full_phone
+        elif phone_local:
+            normalized_country = str(country_code or "").strip()
+            normalized_local = str(phone_local or "").strip()
+            if normalized_local:
+                session.user_phone = f"{normalized_country}{normalized_local}" if normalized_country else normalized_local
         await session.save()
     except Exception as e:
         logger.warning(f"Could not parse country_code/phone_local from request: {e}")
@@ -293,8 +521,102 @@ async def delete_chat_session(session_id: str, _: AdminUser = Depends(get_curren
     await session.delete()
     await manager.close_session_connections(session_id)
     
+    # Broadcast deletion to subscribed admins
+    await manager.broadcast_session_list_update(delete_event)
+    
     logger.info(f"Chat session {session_id} deleted by admin")
     return {"status": "ok", "message": f"Session {session_id} deleted"}
+
+
+@router.patch("/admin/chat_sessions/{session_id}/mark-read")
+async def mark_session_read(session_id: str, _: AdminUser = Depends(get_current_admin)):
+    """Mark a chat session as read by admin"""
+    session = await ChatSession.find_one(ChatSession.session_id == session_id)
+    if not session:
+        return {"status": "not_found", "session_id": session_id}
+
+    session.is_read = True
+    await session.save()
+    
+    # Broadcast update to subscribed admins
+    update_event = await _build_session_update_event("session_marked_read", session_id)
+    await manager.broadcast_session_list_update(update_event)
+    
+    return {
+        "status": "ok",
+        "message": f"Session {session_id} marked as read",
+        "is_read": True
+    }
+
+
+@router.patch("/admin/chat_sessions/{session_id}/archive")
+async def archive_session(session_id: str, _: AdminUser = Depends(get_current_admin)):
+    """Archive a chat session"""
+    session = await ChatSession.find_one(ChatSession.session_id == session_id)
+    if not session:
+        return {"status": "not_found", "session_id": session_id}
+
+    session.is_archived = True
+    session.is_read = True  # Auto-mark as read when archiving
+    await session.save()
+    
+    # Broadcast update to subscribed admins
+    update_event = await _build_session_update_event("session_archived", session_id)
+    await manager.broadcast_session_list_update(update_event)
+    
+    return {
+        "status": "ok",
+        "message": f"Session {session_id} archived",
+        "is_archived": True
+    }
+
+
+@router.patch("/admin/chat_sessions/{session_id}/unarchive")
+async def unarchive_session(session_id: str, _: AdminUser = Depends(get_current_admin)):
+    """Unarchive a chat session"""
+    session = await ChatSession.find_one(ChatSession.session_id == session_id)
+    if not session:
+        return {"status": "not_found", "session_id": session_id}
+
+    session.is_archived = False
+    await session.save()
+    
+    return {
+        "status": "ok",
+        "message": f"Session {session_id} unarchived",
+        "is_archived": False
+    }
+
+
+@router.post("/admin/chat_sessions/{session_id}/ping-user")
+async def ping_user_to_resume_chat(session_id: str, _: AdminUser = Depends(get_current_admin)):
+    session = await ChatSession.find_one(ChatSession.session_id == session_id)
+    if not session:
+        return {
+            "status": "not_found",
+            "session_id": session_id
+        }
+
+    recipient_email = str(session.user_email or "").strip()
+    if not _is_valid_email(recipient_email):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User email is unavailable for this session"
+        )
+
+    sent = await send_session_resume_notification(recipient_email, session_id)
+    if not sent:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send resume email"
+        )
+
+    return {
+        "status": "ok",
+        "message": "Resume email sent successfully",
+        "session_id": session_id,
+        "recipient_email": recipient_email,
+    }
 
 
 @router.delete("/admin/chat_sessions")
@@ -411,15 +733,26 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 await manager.forward_to_admin(session_id, json.dumps(audio_payload))
                 continue
 
-            if payload and payload.get("type") == "message":
-                data = str(payload.get("content") or "").strip()
-            else:
-                data = raw_data
+            message_content = ""
+            message_attachment = None
+            message_reply_to = None
 
-            if not data.strip():
+            if payload and payload.get("type") in {"message", "attachment"}:
+                message_content = str(payload.get("content") or payload.get("text") or payload.get("caption") or "").strip()
+                message_attachment = _normalize_attachment_payload(payload.get("attachment"))
+                if payload.get("type") == "attachment" and not message_attachment:
+                    message_attachment = _normalize_attachment_payload(payload)
+                message_reply_to = _normalize_reply_payload(payload.get("reply_to"))
+
+                if message_attachment and not message_content:
+                    message_content = str(message_attachment.get("file_name") or "Attachment").strip()
+            else:
+                message_content = raw_data
+
+            if not message_content.strip():
                 continue
 
-            human_payload = _extract_human_support_payload(data)
+            human_payload = _extract_human_support_payload(message_content)
             if human_payload:
                 captured_name = human_payload.get("name") or "Visitor"
                 captured_email = human_payload.get("email") or "Not provided"
@@ -476,41 +809,46 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
                 await manager.send_personal_message(confirmation, websocket)
                 continue
+
+            timestamp = datetime.now(timezone.utc).isoformat()
+            structured_payload = None
+            if message_attachment or message_reply_to:
+                structured_payload = _build_message_payload(
+                    "user",
+                    message_content,
+                    timestamp=timestamp,
+                    reply_to=message_reply_to,
+                    attachment=message_attachment,
+                )
             
             # Save User Message
-            user_msg = Message(role=MessageRole.USER, content=data)
+            user_msg = Message(
+                role=MessageRole.USER,
+                content=json.dumps(structured_payload) if structured_payload else message_content,
+            )
             session.messages.append(user_msg)
             await session.save()
 
             # 3. Check Mode: HUMAN or AI?
+            forwarded_payload = structured_payload or {
+                "type": "message",
+                "role": "user",
+                "content": message_content,
+                "timestamp": timestamp,
+            }
+
             if session.human_mode:
                 # A. Human Mode: Forward to Admin only
-                await manager.forward_to_admin(
-                    session_id,
-                    json.dumps({
-                        "type": "message",
-                        "role": "user",
-                        "content": data,
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    })
-                )
+                await manager.forward_to_admin(session_id, json.dumps(forwarded_payload))
             
             else:
                 # B. AI Mode: Forward to Admin (so they can watch) AND Process
-                await manager.forward_to_admin(
-                    session_id,
-                    json.dumps({
-                        "type": "message",
-                        "role": "user",
-                        "content": data,
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    })
-                )
+                await manager.forward_to_admin(session_id, json.dumps(forwarded_payload))
 
                 # Prepare context for Groq
                 history = [{"role": "system", "content": SYSTEM_PROMPT}]
                 for m in session.messages:
-                    history.append({"role": m.role.value, "content": m.content})
+                    history.append({"role": m.role.value, "content": _message_content_preview(m.content)})
 
                 # Call Groq
                 completion = client.chat.completions.create(
@@ -598,6 +936,42 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         manager.disconnect(session_id)
         
         
+@router.websocket("/ws/admin/sessions-list")
+async def admin_sessions_list_websocket(websocket: WebSocket):
+    """WebSocket endpoint for real-time admin session list updates"""
+    # Security: Check authorization token
+    auth_token = websocket.query_params.get("token")
+    admin_user = await get_admin_from_token_value(auth_token or "")
+    
+    if not admin_user:
+        logger.warning(f"❌ Unauthorized admin access attempt to session list")
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    
+    logger.info(f"✅ Admin {admin_user.username} subscribed to session list updates")
+    
+    await manager.subscribe_to_session_list(websocket)
+    
+    try:
+        while True:
+            # Keep connection open - admins just receive broadcasts
+            data = await websocket.receive_text()
+            payload = _extract_json_payload(data)
+            
+            # Handle ping from client
+            if payload and payload.get("type") == "ping":
+                await manager.send_personal_message(
+                    json.dumps({"type": "pong", "timestamp": datetime.now(timezone.utc).isoformat()}),
+                    websocket
+                )
+    except WebSocketDisconnect:
+        manager.unsubscribe_from_session_list(websocket)
+        logger.info(f"Admin {admin_user.username} unsubscribed from session list updates")
+    except Exception as e:
+        logger.error(f"Admin session list WebSocket error: {str(e)}")
+        manager.unsubscribe_from_session_list(websocket)
+
+
 @router.websocket("/ws/admin/{session_id}")
 async def admin_websocket_endpoint(websocket: WebSocket, session_id: str):
     # Security: Check authorization token (legacy static token or signed login token)
@@ -675,16 +1049,41 @@ async def admin_websocket_endpoint(websocket: WebSocket, session_id: str):
                 await manager.forward_to_user(session_id, json.dumps(audio_payload))
                 continue
 
-            if payload and payload.get("type") == "message":
-                data = str(payload.get("content") or "").strip()
-            else:
-                data = raw_data
+            message_content = ""
+            message_attachment = None
+            message_reply_to = None
 
-            if not data.strip():
+            if payload and payload.get("type") in {"message", "attachment"}:
+                message_content = str(payload.get("content") or payload.get("text") or payload.get("caption") or "").strip()
+                message_attachment = _normalize_attachment_payload(payload.get("attachment"))
+                if payload.get("type") == "attachment" and not message_attachment:
+                    message_attachment = _normalize_attachment_payload(payload)
+                message_reply_to = _normalize_reply_payload(payload.get("reply_to"))
+
+                if message_attachment and not message_content:
+                    message_content = str(message_attachment.get("file_name") or "Attachment").strip()
+            else:
+                message_content = raw_data
+
+            if not message_content.strip():
                 continue
             
             # Save it
-            admin_msg = Message(role=MessageRole.ASSISTANT, content=data)
+            timestamp = datetime.now(timezone.utc).isoformat()
+            structured_payload = None
+            if message_attachment or message_reply_to:
+                structured_payload = _build_message_payload(
+                    "admin",
+                    message_content,
+                    timestamp=timestamp,
+                    reply_to=message_reply_to,
+                    attachment=message_attachment,
+                )
+
+            admin_msg = Message(
+                role=MessageRole.ASSISTANT,
+                content=json.dumps(structured_payload) if structured_payload else message_content,
+            )
             if session:
                 session.messages.append(admin_msg)
                 await session.save()
@@ -692,11 +1091,11 @@ async def admin_websocket_endpoint(websocket: WebSocket, session_id: str):
             # Send to User
             await manager.forward_to_user(
                 session_id,
-                json.dumps({
+                json.dumps(structured_payload or {
                     "type": "message",
                     "role": "admin",
-                    "content": data,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
+                    "content": message_content,
+                    "timestamp": timestamp
                 })
             )
 

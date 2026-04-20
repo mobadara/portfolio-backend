@@ -1,5 +1,5 @@
 from fastapi import WebSocket
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import logging
 
 logger = logging.getLogger(__name__)
@@ -8,7 +8,7 @@ class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
         self.admin_connections: Dict[str, WebSocket] = {}
-        
+        self.admin_session_list_connections: List[WebSocket] = []  # For session list subscribers
     async def connect(self, websocket: WebSocket, session_id: str, is_admin: bool = False) -> None:
         """Accept WebSocket connection and store it"""
         await websocket.accept()
@@ -72,5 +72,31 @@ class ConnectionManager:
                 await self.active_connections[session_id].send_text(message)
             except Exception as e:
                 logger.error(f"Failed to forward message to user for session {session_id}: {str(e)}")
+
+    async def subscribe_to_session_list(self, websocket: WebSocket) -> None:
+        """Subscribe admin to real-time session list updates"""
+        await websocket.accept()
+        self.admin_session_list_connections.append(websocket)
+        logger.info(f"Admin subscribed to session list updates. Total subscribers: {len(self.admin_session_list_connections)}")
+
+    def unsubscribe_from_session_list(self, websocket: WebSocket) -> None:
+        """Unsubscribe admin from session list updates"""
+        if websocket in self.admin_session_list_connections:
+            self.admin_session_list_connections.remove(websocket)
+            logger.info(f"Admin unsubscribed from session list updates. Total subscribers: {len(self.admin_session_list_connections)}")
+
+    async def broadcast_session_list_update(self, update_event: str) -> None:
+        """Broadcast session list update to all subscribed admins"""
+        disconnected_clients = []
+        for websocket in self.admin_session_list_connections:
+            try:
+                await websocket.send_text(update_event)
+            except Exception as e:
+                logger.warning(f"Failed to send session list update: {str(e)}")
+                disconnected_clients.append(websocket)
+        
+        # Clean up disconnected clients
+        for websocket in disconnected_clients:
+            self.unsubscribe_from_session_list(websocket)
 
 manager = ConnectionManager()

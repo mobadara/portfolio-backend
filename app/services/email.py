@@ -160,3 +160,54 @@ async def send_session_deleted_notification(recipient_email: str, session_id: st
         recipient_email=recipient_email,
         recipient_name=recipient_email
     )
+
+
+async def send_session_resume_notification(recipient_email: str, session_id: str) -> bool:
+    if not recipient_email:
+        return False
+
+    safe_session = escape(session_id)
+    resume_url = f"{FRONTEND_URL}/?chat_session={safe_session}&open_chat=1"
+
+    html_content = f"""
+        <html>
+            <body style=\"margin:0;padding:0;background:#f2f5fb;font-family:Inter,Segoe UI,Arial,sans-serif;color:#0f172a;\">
+                <table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"padding:28px 12px;\">
+                    <tr>
+                        <td align=\"center\">
+                            <table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"max-width:620px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #dbe3f0;box-shadow:0 12px 32px rgba(15,23,42,0.08);\">
+                                <tr>
+                                    <td style=\"padding:22px 24px;background:linear-gradient(135deg,#001f3f 0%,#003a73 100%);color:#ffffff;\">
+                                        <div style=\"font-size:12px;letter-spacing:1px;text-transform:uppercase;opacity:0.9;\">Portfolio Live Chat</div>
+                                        <h2 style=\"margin:8px 0 0;font-size:22px;line-height:1.3;\">Resume Your Chat</h2>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style=\"padding:22px 24px;\">
+                                        <p style=\"margin:0 0 14px;font-size:15px;line-height:1.6;color:#334155;\">
+                                            Muyiwa invited you to continue your earlier chat session.
+                                        </p>
+                                        <p style=\"margin:0 0 14px;font-size:14px;line-height:1.6;color:#334155;\">
+                                            Session ID: <strong style=\"font-family:ui-monospace,SFMono-Regular,Menlo,monospace;\">{safe_session}</strong>
+                                        </p>
+                                        <a href=\"{resume_url}\" style=\"display:inline-block;padding:12px 18px;border-radius:10px;background:#0b63f6;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;\">Resume Chat</a>
+                                        <p style=\"margin:12px 0 0;font-size:12px;color:#64748b;line-height:1.5;\">
+                                            If the button does not work, copy this URL:<br />
+                                            <span style=\"color:#334155;word-break:break-all;\">{resume_url}</span>
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+            </body>
+        </html>
+    """
+
+    return _send_html_email(
+        subject="Resume Your Portfolio Chat Session",
+        html_content=html_content,
+        recipient_email=recipient_email,
+        recipient_name=recipient_email,
+    )
