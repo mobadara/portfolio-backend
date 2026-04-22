@@ -8,6 +8,7 @@ import base64
 import mimetypes
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from pydantic import BaseModel, Field
 
 from ..models.chat import ChatSession, Message, MessageRole
@@ -24,6 +25,8 @@ from ..services.prompts import SYSTEM_PROMPT
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+CHAT_UPLOADS_DIR = Path(__file__).resolve().parents[2] / "uploads" / "chat"
+CHAT_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class BulkDeleteRequest(BaseModel):
@@ -68,6 +71,22 @@ def _is_valid_email(email: str) -> bool:
     if not email:
         return False
     return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email))
+
+
+def _sanitize_upload_filename(filename: str) -> str:
+    safe_name = Path(filename or "upload").name.strip() or "upload"
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", safe_name)
+    return safe_name.strip("._") or "upload"
+
+
+def _store_chat_media(session_id: str, filename: str, content: bytes) -> str:
+    session_dir = CHAT_UPLOADS_DIR / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    safe_filename = _sanitize_upload_filename(filename)
+    stored_name = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}_{safe_filename}"
+    stored_path = session_dir / stored_name
+    stored_path.write_bytes(content)
+    return f"/uploads/chat/{session_id}/{stored_name}"
 
 
 def _extract_json_payload(raw_data: str) -> Optional[dict]:
@@ -183,6 +202,8 @@ def _build_last_message_preview(messages: list[Message]) -> str:
         if isinstance(parsed, dict):
             if parsed.get("type") == "audio" and parsed.get("audio_base64"):
                 return "Voice message"
+            if parsed.get("type") == "audio" and (parsed.get("audio_url") or parsed.get("audioUrl")):
+                return "Voice message"
             content = str(parsed.get("content") or "").strip()
             if content:
                 return content
@@ -208,8 +229,8 @@ async def upload_chat_attachment(
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
     mime_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
-    preview_type = "image" if mime_type.startswith("image/") else "document"
-    encoded_data = base64.b64encode(file_bytes).decode("utf-8")
+    preview_type = "audio" if mime_type.startswith("audio/") else ("image" if mime_type.startswith("image/") else "document")
+    media_url = _store_chat_media(session_id, file.filename or "upload", file_bytes)
 
     return {
         "session_id": session_id,
@@ -218,7 +239,8 @@ async def upload_chat_attachment(
         "size_bytes": len(file_bytes),
         "caption": caption.strip(),
         "preview_type": preview_type,
-        "data_url": f"data:{mime_type};base64,{encoded_data}",
+        "url": media_url,
+        "audio_url": media_url if preview_type == "audio" else None,
     }
 
 
@@ -721,17 +743,22 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
             if payload and payload.get("type") == "audio":
                 audio_base64 = str(payload.get("audio_base64") or "").strip()
-                if not audio_base64:
+                audio_url = str(payload.get("audio_url") or payload.get("audioUrl") or "").strip()
+                if not audio_base64 and not audio_url:
                     continue
 
                 audio_payload = {
                     "type": "audio",
                     "role": "user",
-                    "audio_base64": audio_base64,
                     "mime_type": payload.get("mime_type") or "audio/webm",
                     "duration_seconds": payload.get("duration_seconds"),
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
+
+                if audio_url:
+                    audio_payload["audio_url"] = audio_url
+                else:
+                    audio_payload["audio_base64"] = audio_base64
 
                 user_msg = Message(role=MessageRole.USER, content=json.dumps(audio_payload))
                 session.messages.append(user_msg)
@@ -1036,17 +1063,22 @@ async def admin_websocket_endpoint(websocket: WebSocket, session_id: str):
 
             if payload and payload.get("type") == "audio":
                 audio_base64 = str(payload.get("audio_base64") or "").strip()
-                if not audio_base64:
+                audio_url = str(payload.get("audio_url") or payload.get("audioUrl") or "").strip()
+                if not audio_base64 and not audio_url:
                     continue
 
                 audio_payload = {
                     "type": "audio",
                     "role": "admin",
-                    "audio_base64": audio_base64,
                     "mime_type": payload.get("mime_type") or "audio/webm",
                     "duration_seconds": payload.get("duration_seconds"),
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
+
+                if audio_url:
+                    audio_payload["audio_url"] = audio_url
+                else:
+                    audio_payload["audio_base64"] = audio_base64
 
                 admin_msg = Message(role=MessageRole.ASSISTANT, content=json.dumps(audio_payload))
                 if session:
