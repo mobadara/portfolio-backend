@@ -290,6 +290,16 @@ async def get_admin_overview(current_admin: AdminUser = Depends(get_current_admi
     }
 
 
+@router.get("/admin/sessions")
+async def get_chat_sessions(_: AdminUser = Depends(get_current_admin)):
+    """Get all chat sessions with human_mode status - used by admin dashboard"""
+    sessions = await ChatSession.find_all().sort([("created_at", -1)]).to_list()
+    return {
+        "status": "ok",
+        "sessions": [_serialize_session(session) for session in sessions],
+    }
+
+
 @router.post("/admin/users")
 async def create_admin_user(payload: AdminCreateRequest, _: AdminUser = Depends(get_current_admin)):
     existing = await AdminUser.find_one(AdminUser.username == payload.username)
