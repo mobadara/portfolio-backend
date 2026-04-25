@@ -451,6 +451,9 @@ async def request_human_mode(session_id: str, request: Request):
             "session_id": session_id
         }
 
+    # Determine if this is the FIRST time requesting human mode or a RESUME
+    is_first_request = session.human_mode_first_requested_at is None
+
     # Parse incoming JSON for lead details and normalize phone fields
     try:
         data = await request.json()
@@ -484,33 +487,43 @@ async def request_human_mode(session_id: str, request: Request):
     # Enable human mode
     session.human_mode = True
     session.human_agent_assigned = False  # Mark as pending assignment
+    
+    # Track first request timestamp
+    if is_first_request:
+        session.human_mode_first_requested_at = datetime.now(timezone.utc)
+    
     await session.save()
 
-    # Send notification email
-    try:
-        lead_dict = {
-            "name": session.user_name or "Chat User",
-            "email": session.user_email or "Not provided",
-            "phone": session.user_phone or "Human assistance requested",
-            "notes": "Human mode requested",
-            "country_code": getattr(session, 'country_code', None) or None,
-            "phone_local": getattr(session, 'phone_local', None) or None
-        }
-        await send_lead_notification(lead_dict, session_id)
-        logger.info(f"Human mode requested for session {session_id}, notification sent")
-    except Exception as e:
-        logger.error(f"Failed to send notification for session {session_id}: {str(e)}")
+    # Send notification email ONLY on first request, not on resume
+    if is_first_request:
+        try:
+            lead_dict = {
+                "name": session.user_name or "Chat User",
+                "email": session.user_email or "Not provided",
+                "phone": session.user_phone or "Human assistance requested",
+                "notes": "Human mode requested",
+                "country_code": getattr(session, 'country_code', None) or None,
+                "phone_local": getattr(session, 'phone_local', None) or None
+            }
+            await send_lead_notification(lead_dict, session_id)
+            logger.info(f"Human mode requested for session {session_id}, notification sent")
+        except Exception as e:
+            logger.error(f"Failed to send notification for session {session_id}: {str(e)}")
+    else:
+        # On resume (re-request after idle), just log it without sending another email
+        logger.info(f"Human mode resumed for session {session_id} (lead already submitted at {session.human_mode_first_requested_at})")
 
     # Notify user and admin via WebSocket if connected
     user_message = "I'm connecting you with Muyiwa now. He'll be with you shortly! 👋"
     await manager.forward_to_user(session_id, user_message)
-    await manager.forward_to_admin(session_id, f"User requested human assistance in session {session_id}")
+    await manager.forward_to_admin(session_id, f"User {'requested' if is_first_request else 'resumed'} human assistance in session {session_id}")
 
     return {
         "status": "ok",
         "message": "Human mode enabled",
         "session_id": session_id,
-        "human_mode": True
+        "human_mode": True,
+        "is_first_request": is_first_request
     }
 
 
@@ -808,8 +821,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 if _is_valid_email(captured_email):
                     session.user_email = captured_email
 
+                # Determine if this is the FIRST time requesting human mode or a RESUME
+                is_first_request = session.human_mode_first_requested_at is None
+                
                 session.human_mode = True
                 session.human_agent_assigned = False
+                
+                # Track first request timestamp
+                if is_first_request:
+                    session.human_mode_first_requested_at = datetime.now(timezone.utc)
+                
                 await session.save()
 
                 lead_dict = {
@@ -821,10 +842,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     "phone_local": getattr(session, 'phone_local', None) or None
                 }
 
-                try:
-                    await send_lead_notification(lead_dict, session_id)
-                except Exception as e:
-                    logger.error(f"Failed to send human support notification for {session_id}: {str(e)}")
+                # Send notification email ONLY on first request, not on resume
+                if is_first_request:
+                    try:
+                        await send_lead_notification(lead_dict, session_id)
+                        logger.info(f"Human mode requested for session {session_id}, notification sent")
+                    except Exception as e:
+                        logger.error(f"Failed to send human support notification for {session_id}: {str(e)}")
+                else:
+                    logger.info(f"Human mode resumed for session {session_id} (lead already submitted at {session.human_mode_first_requested_at})")
 
                 await manager.forward_to_admin(
                     session_id,

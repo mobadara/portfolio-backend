@@ -33,6 +33,8 @@ class ChatSession(Document):
     user_name: Optional[str] = Field(None, min_length=1)
     user_email: Optional[EmailStr] = None
     user_phone: Optional[str] = None
+    country_code: Optional[str] = Field(None, description="Country code for phone (e.g., +234)")
+    phone_local: Optional[str] = Field(None, description="Local phone number without country code")
     
     # State Management
     is_active: bool = Field(default=True)
@@ -43,6 +45,7 @@ class ChatSession(Document):
     is_read: bool = Field(default=False, description="Marks session as read by admin")
     is_archived: bool = Field(default=False, description="Archives session from active view")
     created_at: datetime = Field(default_factory=datetime.now, description="Timestamp when session was created")
+    human_mode_first_requested_at: Optional[datetime] = Field(None, description="Timestamp when human mode was first requested (for tracking initial lead submission)")
     
     class Settings:
         name = 'chat_sessions'
