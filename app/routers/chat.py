@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status, Request
 from groq import Groq
 from typing import cast, Optional
 import os
@@ -216,6 +216,7 @@ def _build_last_message_preview(messages: list[Message]) -> str:
 @router.post("/chat/{session_id}/attachment")
 async def upload_chat_attachment(
     session_id: str,
+    request: Request,
     file: UploadFile = File(...),
     caption: str = Form(default=""),
 ):
@@ -231,6 +232,7 @@ async def upload_chat_attachment(
     mime_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
     preview_type = "audio" if mime_type.startswith("audio/") else ("image" if mime_type.startswith("image/") else "document")
     media_url = _store_chat_media(session_id, file.filename or "upload", file_bytes)
+    absolute_media_url = media_url if media_url.startswith("http") else f"{str(request.base_url).rstrip('/')}{media_url}"
 
     return {
         "session_id": session_id,
@@ -239,8 +241,8 @@ async def upload_chat_attachment(
         "size_bytes": len(file_bytes),
         "caption": caption.strip(),
         "preview_type": preview_type,
-        "url": media_url,
-        "audio_url": media_url if preview_type == "audio" else None,
+        "url": absolute_media_url,
+        "audio_url": absolute_media_url if preview_type == "audio" else None,
     }
 
 
@@ -435,10 +437,6 @@ async def clear_chat_session(session_id: str):
         "cleared_by_user": True,
         "message": "Session cleared by user"
     }
-
-
-
-from fastapi import Request
 
 @router.post("/chat/{session_id}/request-human")
 async def request_human_mode(session_id: str, request: Request):

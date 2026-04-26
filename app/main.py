@@ -17,6 +17,7 @@ import time
 from .routers import admin, chat, project, skill
 from .models.admin import AdminUser, ContactMessage
 from .models.chat import ChatSession
+from .models.portfolio_asset import PortfolioAsset
 from .models.project import Project
 from .models.skill import Skill
 from .routers.admin import seed_default_admin
@@ -39,7 +40,7 @@ async def lifespan(app: FastAPI):
     database = cast(AsyncIOMotorDatabase, raw_db)
     await init_beanie(
         database=database,
-        document_models=[ChatSession, AdminUser, ContactMessage, Project, Skill]
+        document_models=[ChatSession, AdminUser, ContactMessage, Project, Skill, PortfolioAsset]
     )   # pyright: ignore[reportArgumentType]
     await seed_default_admin()
     app.state.mongo_client = client

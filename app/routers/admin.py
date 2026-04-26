@@ -1,13 +1,16 @@
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional
+from typing import AsyncGenerator, Literal, Optional
 
 from beanie import PydanticObjectId
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from bson import ObjectId
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi.responses import PlainTextResponse, StreamingResponse
+from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 from pydantic import BaseModel, EmailStr, Field
 
 from ..models.admin import AdminUser, ContactMessage
 from ..models.chat import ChatSession
+from ..models.portfolio_asset import PortfolioAsset
 from ..models.project import Project
 from ..models.skill import Skill
 from ..services.auth import (
@@ -19,38 +22,48 @@ from ..services.auth import (
 )
 
 router = APIRouter()
-UPLOADS_DIR = Path(__file__).resolve().parents[2] / "uploads"
+ASSET_TYPE_VALUES: set[str] = {"resume", "portrait"}
 
 
-def _ensure_uploads_dir() -> None:
-    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+def _normalize_asset_type(asset_type: str) -> str:
+    normalized = str(asset_type or "").strip().lower()
+    if normalized not in ASSET_TYPE_VALUES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="asset_type must be 'resume' or 'portrait'")
+    return normalized
 
 
-def _remove_previous(prefix: str) -> None:
-    for existing_file in UPLOADS_DIR.glob(f"{prefix}.*"):
-        existing_file.unlink(missing_ok=True)
+def _allowed_extensions_for(asset_type: str) -> set[str]:
+    if asset_type == "resume":
+        return {".pdf", ".doc", ".docx"}
+    return {".jpg", ".jpeg", ".png", ".webp"}
 
 
 def _extension_from_filename(filename: Optional[str]) -> str:
     if not filename:
         return ""
-    return Path(filename).suffix.lower()
+    if "." not in filename:
+        return ""
+    return f".{filename.rsplit('.', 1)[-1].lower()}"
 
 
-def _latest_uploaded_file(prefix: str) -> Optional[Path]:
-    _ensure_uploads_dir()
-    candidates = sorted(
-        UPLOADS_DIR.glob(f"{prefix}.*"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    return candidates[0] if candidates else None
+def _safe_filename(filename: Optional[str], asset_type: str) -> str:
+    extension = _extension_from_filename(filename)
+    return f"{asset_type}{extension or ''}"
 
 
-async def _save_uploaded_file(file: UploadFile, destination: Path) -> int:
-    content = await file.read()
-    destination.write_bytes(content)
-    return len(content)
+def _build_gridfs_bucket(request: Request) -> AsyncIOMotorGridFSBucket:
+    db = getattr(request.app.state, "mongo_database", None)
+    if db is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database is not initialized")
+    return AsyncIOMotorGridFSBucket(db)
+
+
+async def _iter_gridfs_chunks(grid_out) -> AsyncGenerator[bytes, None]:
+    while True:
+        chunk = await grid_out.read(1024 * 1024)
+        if not chunk:
+            break
+        yield chunk
 
 
 class AdminLoginRequest(BaseModel):
@@ -259,8 +272,8 @@ async def get_admin_overview(current_admin: AdminUser = Depends(get_current_admi
     skills = await Skill.find_all().sort(+Skill.order).to_list()
     sessions = await ChatSession.find_all().sort([("created_at", -1)]).to_list()
 
-    latest_resume = _latest_uploaded_file("resume")
-    latest_portrait = _latest_uploaded_file("portrait")
+    latest_resume = await PortfolioAsset.find_one(PortfolioAsset.asset_type == "resume")
+    latest_portrait = await PortfolioAsset.find_one(PortfolioAsset.asset_type == "portrait")
 
     return {
         "status": "ok",
@@ -279,12 +292,12 @@ async def get_admin_overview(current_admin: AdminUser = Depends(get_current_admi
         "sessions": [_serialize_session(session) for session in sessions],
         "assets": {
             "resume": {
-                "filename": latest_resume.name if latest_resume else None,
-                "url": f"/uploads/{latest_resume.name}" if latest_resume else None,
+                "filename": latest_resume.filename if latest_resume else None,
+                "url": "/api/assets/resume" if latest_resume else None,
             },
             "portrait": {
-                "filename": latest_portrait.name if latest_portrait else None,
-                "url": f"/uploads/{latest_portrait.name}" if latest_portrait else None,
+                "filename": latest_portrait.filename if latest_portrait else None,
+                "url": "/api/assets/portrait" if latest_portrait else None,
             },
         },
     }
@@ -448,83 +461,81 @@ async def delete_contact_message(message_id: str, _: AdminUser = Depends(get_cur
     return {"status": "ok", "message": "Message deleted"}
 
 
-@router.post("/admin/upload/resume")
-async def upload_latest_resume(
+@router.post("/admin/upload/{asset_type}", response_class=PlainTextResponse)
+async def upload_portfolio_asset(
+    asset_type: Literal["resume", "portrait"],
+    request: Request,
     file: UploadFile = File(...),
     _: AdminUser = Depends(get_current_admin),
 ):
-    _ensure_uploads_dir()
-
-    allowed_extensions = {".pdf", ".doc", ".docx"}
+    normalized_asset_type = _normalize_asset_type(asset_type)
     extension = _extension_from_filename(file.filename)
+    allowed_extensions = _allowed_extensions_for(normalized_asset_type)
+
     if extension not in allowed_extensions:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Resume must be a PDF, DOC, or DOCX file",
-        )
+        detail = "Resume must be a PDF, DOC, or DOCX file" if normalized_asset_type == "resume" else "Portrait must be a JPG, JPEG, PNG, or WEBP image"
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
-    _remove_previous("resume")
-    filename = f"resume{extension}"
-    destination = UPLOADS_DIR / filename
-    file_size = await _save_uploaded_file(file, destination)
+    bucket = _build_gridfs_bucket(request)
+    existing_asset = await PortfolioAsset.find_one(PortfolioAsset.asset_type == normalized_asset_type)
+    if existing_asset and existing_asset.file_id:
+        try:
+            await bucket.delete(ObjectId(existing_asset.file_id))
+        except Exception:
+            # Ignore stale references and continue with overwrite.
+            pass
 
-    return {
-        "status": "ok",
-        "message": "Resume uploaded successfully",
-        "filename": filename,
-        "url": f"/uploads/{filename}",
-        "size": file_size,
-    }
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty")
 
+    stored_filename = _safe_filename(file.filename, normalized_asset_type)
+    gridfs_file_id = await bucket.upload_from_stream(
+        stored_filename,
+        file_bytes,
+        metadata={
+            "asset_type": normalized_asset_type,
+            "content_type": file.content_type or "application/octet-stream",
+        },
+    )
 
-@router.get("/api/assets/resume")
-async def get_latest_resume_asset():
-    latest_resume = _latest_uploaded_file("resume")
-    if not latest_resume:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume not found")
+    now = datetime.now(timezone.utc)
+    if existing_asset:
+        existing_asset.filename = stored_filename
+        existing_asset.content_type = file.content_type or "application/octet-stream"
+        existing_asset.file_id = str(gridfs_file_id)
+        existing_asset.updated_at = now
+        await existing_asset.save()
+    else:
+        await PortfolioAsset(
+            filename=stored_filename,
+            content_type=file.content_type or "application/octet-stream",
+            asset_type=normalized_asset_type,
+            file_id=str(gridfs_file_id),
+            created_at=now,
+            updated_at=now,
+        ).insert()
 
-    return {
-        "filename": latest_resume.name,
-        "url": f"/uploads/{latest_resume.name}",
-    }
-
-
-@router.post("/admin/upload/portrait")
-async def upload_latest_portrait(
-    file: UploadFile = File(...),
-    _: AdminUser = Depends(get_current_admin),
-):
-    _ensure_uploads_dir()
-
-    allowed_extensions = {".jpg", ".jpeg", ".png", ".webp"}
-    extension = _extension_from_filename(file.filename)
-    if extension not in allowed_extensions:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Portrait must be a JPG, JPEG, PNG, or WEBP image",
-        )
-
-    _remove_previous("portrait")
-    filename = f"portrait{extension}"
-    destination = UPLOADS_DIR / filename
-    file_size = await _save_uploaded_file(file, destination)
-
-    return {
-        "status": "ok",
-        "message": "Portrait uploaded successfully",
-        "filename": filename,
-        "url": f"/uploads/{filename}",
-        "size": file_size,
-    }
+    full_url = str(request.url_for("get_portfolio_asset", asset_type=normalized_asset_type))
+    return PlainTextResponse(content=full_url)
 
 
-@router.get("/api/assets/portrait")
-async def get_latest_portrait_asset():
-    latest_portrait = _latest_uploaded_file("portrait")
-    if not latest_portrait:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Portrait not found")
+@router.get("/api/assets/{asset_type}", name="get_portfolio_asset")
+async def get_portfolio_asset(asset_type: Literal["resume", "portrait"], request: Request):
+    normalized_asset_type = _normalize_asset_type(asset_type)
+    asset = await PortfolioAsset.find_one(PortfolioAsset.asset_type == normalized_asset_type)
+    if not asset:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{normalized_asset_type.title()} not found")
 
-    return {
-        "filename": latest_portrait.name,
-        "url": f"/uploads/{latest_portrait.name}",
-    }
+    bucket = _build_gridfs_bucket(request)
+    try:
+        grid_out = await bucket.open_download_stream(ObjectId(asset.file_id))
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{normalized_asset_type.title()} file stream not found")
+
+    headers = {"Content-Disposition": f"inline; filename=\"{asset.filename}\""}
+    return StreamingResponse(
+        _iter_gridfs_chunks(grid_out),
+        media_type=asset.content_type or "application/octet-stream",
+        headers=headers,
+    )
