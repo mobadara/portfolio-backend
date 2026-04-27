@@ -1085,6 +1085,26 @@ async def admin_websocket_endpoint(websocket: WebSocket, session_id: str):
                 )
                 continue
 
+            if payload and payload.get("type") == "leave_human_mode":
+                reset_reason = str(payload.get("reason") or "admin_completed").strip() or "admin_completed"
+                was_human_mode = bool(session.human_mode)
+                session.human_mode = False
+                session.human_agent_assigned = False
+                await session.save()
+
+                mode_reset_event = json.dumps({
+                    "type": "session_returned_to_ai",
+                    "role": "system",
+                    "content": "Human support ended. AI mode resumed.",
+                    "reason": reset_reason,
+                    "previous_human_mode": was_human_mode,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+
+                await manager.forward_to_user(session_id, mode_reset_event)
+                await manager.forward_to_admin(session_id, mode_reset_event)
+                continue
+
             if payload and payload.get("type") == "audio":
                 audio_base64 = str(payload.get("audio_base64") or "").strip()
                 audio_url = str(payload.get("audio_url") or payload.get("audioUrl") or "").strip()
